@@ -88,7 +88,13 @@ jobs:
           odin test tests/hugin
 
       - name: Build
-        run: odin build cmd/hrafnar -o:speed -out:bin/hrafnar
+        # mkdir first: bin/ is gitignored, so a fresh checkout does not have
+        # it and Odin will not create the output directory itself. Fails as
+        # "LLVM Error: No such file or directory", which does not point at
+        # the real cause.
+        run: |
+          mkdir -p bin
+          odin build cmd/hrafnar -o:speed -out:bin/hrafnar
 
       - name: Package
         run: |
