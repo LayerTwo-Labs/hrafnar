@@ -121,6 +121,25 @@ sudo $EDITOR /etc/hrafnar.config          # set datadir and index
 
 ## Quick start
 
+> **Wait until Bitcoin Core is fully synced before you start.** hrafnar indexes the
+> blocks that are on disk, and it has no way to know the network's real tip — so
+> against a node that is still catching up it will happily build an index of a
+> partial chain and then answer with *incomplete* balances and histories. Those look
+> like real answers, which is worse than an error. Check first:
+>
+> ```sh
+> bitcoin-cli getblockchaininfo | grep -E 'blocks|headers|initialblockdownload'
+> ```
+>
+> Start hrafnar once `initialblockdownload` is `false` and `blocks` has caught up to
+> `headers`. The same applies to a node restored from an **assumeutxo** snapshot: it
+> serves the tip immediately but backfills historical blocks in the background, so
+> `blk*.dat` stays incomplete until that finishes.
+>
+> Nothing is lost if you jump the gun — the daemon keeps following the chain and will
+> converge — but you will have spent the bulk build on a partial chain and served
+> wrong numbers in the meantime.
+
 Commands below assume `hrafnar` is on your `PATH`. If you have not installed it,
 run it in place instead — `./bin/hrafnar` from a source build, `./hrafnar` from a
 release tarball.
@@ -316,6 +335,21 @@ Unlike the Electrum server, the esplora API is **off by default** — turn it on
 want it.
 
 ## When something goes wrong
+
+**Balances or histories look too low, or the tip is behind the network.** Almost always
+this means hrafnar was pointed at a node that was not fully synced — it indexes the
+blocks on disk and cannot tell how many are missing. Compare the two tips:
+
+```sh
+hrafnar tip                                        # what hrafnar has indexed
+bitcoin-cli getblockchaininfo | grep -E 'blocks|headers|initialblockdownload'
+```
+
+If Core is still catching up, let it finish; the daemon will follow along and converge
+on its own. If Core is fully synced and hrafnar is still behind by more than a block or
+two, that is a real problem — check the log. A node restored from an **assumeutxo**
+snapshot behaves the same way: it reports the tip immediately while backfilling
+historical blocks in the background, so the index is incomplete until that finishes.
 
 The daemon writes two files, and which one has content tells you what happened:
 
