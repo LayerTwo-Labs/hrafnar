@@ -20,39 +20,123 @@ multicore machine with NVMe — never at the cost of correctness: everything on 
 checksummed, every store is crash-safe, and nothing becomes immutable until it is past
 the reorg horizon.
 
-## Get it
+## Building from source
 
-**Release binary** (linux-amd64, linux-arm64, macos-arm64): grab the tarball for your
-platform from the [latest release](../../releases/latest), unpack, and you have a
-single `hrafnar` binary — no runtime dependencies.
+The only requirement is the [Odin compiler](https://odin-lang.org/docs/install/),
+**`dev-2026-08` or newer**. That is a hard minimum, not a preference: the hardware
+CRC32C path uses ARM intrinsics added in `dev-2026-08`, and the temporary-allocator
+API changed in the same release, so older compilers fail to build rather than
+silently degrade. There is nothing else to install — no package manager, no build
+system. The repository plus Odin's core library are the entire dependency graph.
 
-**Build from source**: the only requirement is the
-[Odin compiler](https://odin-lang.org/docs/install/), **`dev-2026-08` or newer** (Odin
-ships monthly dev releases; `brew install odin` on macOS, release zips elsewhere).
-Earlier versions will not compile: the hardware CRC32C path uses ARM intrinsics added in
-`dev-2026-08`, and the temporary-allocator API changed in the same release. Then:
+**macOS:**
 
 ```sh
-odin build cmd/hrafnar -o:speed -out:bin/hrafnar
-odin test tests/munin && odin test tests/hugin      # optional: full suite, seconds
+brew install odin
+odin version          # must report dev-2026-08 or newer
 ```
 
-No packages to fetch, no build system — the repository plus Odin's core library are
-the entire dependency graph. SHA-256 hardware acceleration is detected at runtime, so
-one binary per platform serves every CPU.
+**Linux (amd64 or arm64)** — Odin ships official tarballs per release:
+
+```sh
+ODIN_VERSION=dev-2026-08
+ARCH=amd64                                  # or arm64
+curl -fsSL -o odin.tar.gz \
+  "https://github.com/odin-lang/Odin/releases/download/$ODIN_VERSION/odin-linux-$ARCH-$ODIN_VERSION.tar.gz"
+mkdir -p ~/odin && tar -xzf odin.tar.gz -C ~/odin
+
+# The archive extracts to a directory named after the nightly date, not the
+# tag, so resolve it rather than hardcoding it. Odin finds its core/ and base/
+# collections relative to the binary, so add that directory to PATH.
+export PATH="$(dirname "$(find ~/odin -name odin -type f | head -1)"):$PATH"
+odin version
+```
+
+Add that `export PATH=...` line to your shell profile to make it stick.
+
+**Then build hrafnar:**
+
+```sh
+git clone https://github.com/LayerTwo-Labs/hrafnar
+cd hrafnar
+mkdir -p bin                                        # odin will not create it
+odin build cmd/hrafnar -o:speed -out:bin/hrafnar
+./bin/hrafnar version
+```
+
+`mkdir -p bin` matters: Odin does not create the output directory and reports the
+failure as `LLVM Error: No such file or directory`, which points nowhere near the
+cause.
+
+Run the suite if you want to confirm the build (a few seconds, no Bitcoin data
+required — every test builds its own synthetic chain):
+
+```sh
+odin test tests/munin && odin test tests/hugin
+```
+
+For profiling or a debugger, keep the symbols:
+
+```sh
+odin build cmd/hrafnar -o:speed -debug -out:bin/hrafnar-debug
+```
+
+## Pre-built binaries
+
+Every tagged release publishes a tarball for **linux-amd64**, **linux-arm64**, and
+**macos-arm64**, each containing a single `hrafnar` binary — no interpreter, no shared libraries
+beyond the system libc — plus this README, the licence, and the example config.
+
+Grab one from the [latest release](../../releases/latest), or with the GitHub CLI:
+
+```sh
+gh release download --repo LayerTwo-Labs/hrafnar --pattern '*linux-amd64.tar.gz'
+tar -xzf hrafnar-*-linux-amd64.tar.gz
+cd hrafnar-*-linux-amd64
+./hrafnar version
+```
+
+CPU features are detected at runtime — SHA-256 extensions, hardware CRC32C, SIMD —
+so one binary per platform runs correctly on every CPU of that architecture and
+still uses the fast paths where they exist.
+
+## Install system-wide
+
+Whichever way you got the binary — `bin/hrafnar` from a source build, or `./hrafnar`
+from a release tarball — put it on `PATH`:
+
+```sh
+sudo install -m 755 bin/hrafnar /usr/local/bin/hrafnar     # source build
+sudo install -m 755 ./hrafnar   /usr/local/bin/hrafnar     # release tarball
+```
+
+Then `hrafnar daemon` / `hrafnar balance …` work from anywhere. The config is found
+automatically at `~/.hrafnar/hrafnar.config`; for a system-wide one, put it at
+`/etc/hrafnar.config` and pass `--config /etc/hrafnar.config`:
+
+```sh
+sudo cp hrafnar.config.example /etc/hrafnar.config
+sudo $EDITOR /etc/hrafnar.config          # set datadir and index
+```
 
 ## Quick start
 
+Commands below assume `hrafnar` is on your `PATH`. If you have not installed it,
+run it in place instead — `./bin/hrafnar` from a source build, `./hrafnar` from a
+release tarball.
+
 ```sh
-# 1. Point hrafnar at your node's blocks and pick an index location
-cat > hrafnar.config <<EOF
+# 1. Point hrafnar at your node's blocks and pick an index location.
+#    This path is searched automatically, so no --config flag is ever needed.
+mkdir -p ~/.hrafnar
+cat > ~/.hrafnar/hrafnar.config <<EOF
 [hugin]
 datadir = /home/you/.bitcoin/blocks
 index   = /home/you/.hrafnar/mainnet
 EOF
 
 # 2. Run it
-./bin/hrafnar daemon
+hrafnar daemon
 ```
 
 That's the whole setup. On a fresh index directory the daemon **runs the initial bulk
@@ -62,18 +146,18 @@ serving queries and follows the chain, picking up new blocks within its poll int
 ## The daemon
 
 ```sh
-./bin/hrafnar daemon               # detaches, returns your prompt, runs until stopped
-./bin/hrafnar stop                 # stops it (via <index>/hrafnar.pid)
-./bin/hrafnar logs                 # follow the daemon log, colorized (Ctrl-C to exit)
-./bin/hrafnar daemon --foreground  # stay attached instead (systemd, or watching live)
-./bin/hrafnar daemon --poll 10     # catch-up every 10s (default 30 — no flag needed)
+hrafnar daemon               # detaches, returns your prompt, runs until stopped
+hrafnar stop                 # stops it (via <index>/hrafnar.pid)
+hrafnar logs                 # follow the daemon log, colorized (Ctrl-C to exit)
+hrafnar daemon --foreground  # stay attached instead (systemd, or watching live)
+hrafnar daemon --poll 10     # catch-up every 10s (default 30 — no flag needed)
 ```
 
 The daemon runs indefinitely and keeps balances as fresh as the chain: it watches the
 newest blk file (one stat per second), so a new block is indexed within a second or two
 of bitcoind writing it — the poll interval is only a fallback safety net. Indexing and
 mempool syncing happen on their own threads, so neither interrupts serving. Stop it
-with `./bin/hrafnar stop` from any shell, `kill <pid>`, or `Ctrl-C` if attached — all
+with `hrafnar stop` from any shell, `kill <pid>`, or `Ctrl-C` if attached — all
 safe at any moment, including mid-build: every store is crash-safe.
 
 Everything is logged to `<index>/hrafnar.log` in both modes — plain text, clean for
@@ -110,17 +194,6 @@ balance.
 While the initial bulk build runs, queries answer with its progress instead
 of hanging — `hrafnar tip` will say e.g. `index building: phase 2: 1042/4096
 buckets`. The Electrum and esplora ports open only once the index is complete.
-
-## Install system-wide
-
-```sh
-sudo install -m 755 bin/hrafnar /usr/local/bin/hrafnar
-sudo mkdir -p /etc && sudo cp hrafnar.config /etc/hrafnar.config   # or keep it per-user
-```
-
-Then `hrafnar daemon` / `hrafnar balance …` work from anywhere (pass
-`--config /etc/hrafnar.config`, or keep the config at `~/.hrafnar/hrafnar.config` where
-it's found automatically).
 
 ## Run as a systemd service
 
@@ -162,19 +235,19 @@ Works while the daemon runs (served over its socket) or with no daemon at all (o
 index directly) — same output either way.
 
 ```sh
-./bin/hrafnar balance  bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4
-./bin/hrafnar balance  1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa          # base58 too
-./bin/hrafnar balance  <64-hex-char scripthash>                    # or raw scripthash
+hrafnar balance  bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4
+hrafnar balance  1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa          # base58 too
+hrafnar balance  <64-hex-char scripthash>                    # or raw scripthash
 
-./bin/hrafnar history  <address> [--from 800000] [--limit 50]  # txid, direction, amount
-./bin/hrafnar utxos    <address>       # unspent outputs + total
-./bin/hrafnar tx       <txid>          # height, size
-./bin/hrafnar tx       <txid> --raw    # full transaction hex
-./bin/hrafnar outpoint <txid>:<vout>   # spent by whom, or unspent
-./bin/hrafnar header   <height>        # hash, prev, merkle, bits, raw hex
-./bin/hrafnar merkle   <txid>          # merkle inclusion proof (height, pos, branch)
-./bin/hrafnar feehist                  # mempool fee histogram (needs the daemon)
-./bin/hrafnar tip                      # the index's current tip height + hash
+hrafnar history  <address> [--from 800000] [--limit 50]  # txid, direction, amount
+hrafnar utxos    <address>       # unspent outputs + total
+hrafnar tx       <txid>          # height, size
+hrafnar tx       <txid> --raw    # full transaction hex
+hrafnar outpoint <txid>:<vout>   # spent by whom, or unspent
+hrafnar header   <height>        # hash, prev, merkle, bits, raw hex
+hrafnar merkle   <txid>          # merkle inclusion proof (height, pos, branch)
+hrafnar feehist                  # mempool fee histogram (needs the daemon)
+hrafnar tip                      # the index's current tip height + hash
 ```
 
 Every query takes `--json` for machine-readable output (same data, one JSON object) —
@@ -332,26 +405,26 @@ example: [`hrafnar.config.example`](hrafnar.config.example).
 
 ```ini
 [hugin]
-datadir = /home/you/.bitcoin/blocks
-index   = /home/you/.hrafnar/mainnet
-network = mainnet           ; mainnet|testnet3|signet|regtest|ecash|ecash-signet|ecash-regtest
-;work = /mnt/scratch/work   ; build scratch on another disk (see Disk space)
-;workers = 12               ; build threads (default: core count)
-;bucket_bits = 12           ; keyspace partitions (default 4096)
-;horizon = 100              ; reorg horizon in blocks
-;compact = on               ; ~3x smaller index, slower address queries
-;rpc = 127.0.0.1:8332       ; bitcoind RPC for mempool tracking
-;rpc_cookie = ~/.bitcoin/.cookie   ; default: derived from datadir
-;rpc_user = u               ; alternative to the cookie
+datadir = /home/you/.bitcoin/blocks   ; where to find nodes .dat files
+index   = /home/you/.hrafnar/mainnet  ; where to store hrafnars index files
+network = mainnet                     ; mainnet|testnet3|signet|regtest|ecash|ecash-signet|ecash-regtest
+;work = /mnt/scratch/work             ; build scratch on another disk (see Disk space)
+;workers = 12                         ; build threads (default: core count)
+;bucket_bits = 12                     ; keyspace partitions (default 4096)
+;horizon = 100                        ; reorg horizon in blocks
+;compact = on                         ; ~3x smaller index, slower address queries
+;rpc = 127.0.0.1:8332                 ; bitcoind RPC for mempool tracking
+;rpc_cookie = ~/.bitcoin/.cookie      ; default: derived from datadir
+;rpc_user = u                         ; alternative to the cookie
 ;rpc_pass = p
-;mempool = on               ; off to disable unconfirmed tracking
-;electrum = off             ; Electrum serving is ON by default; off disables
+;mempool = on                         ; off to disable unconfirmed tracking
+;electrum = off                       ; Electrum serving is ON by default; off disables
 ;electrum_bind = 127.0.0.1:50001
 ;electrum_banner = my hrafnar server
 ;electrum_max_history = 5000
-;esplora = on               ; esplora-compatible HTTP API (default off)
+;esplora = on                         ; esplora-compatible HTTP API (default off)
 ;esplora_bind = 127.0.0.1:3000
-;query_workers = 8          ; query threads (default: half the cores, min 4)
+;query_workers = 8                    ; query threads (default: half the cores, min 4)
 ```
 
 **Disk space:** the initial build spills sort scratch — up to ~0.75x the datadir size at
