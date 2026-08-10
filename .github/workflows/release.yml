@@ -1,0 +1,123 @@
+# Build and release hrafnar for linux-amd64, linux-arm64, and macos-arm64.
+#
+# Runs tests on every push/PR (linux-amd64 only — fast signal), and on a
+# version tag (v*) builds all three targets and attaches tarballs to a
+# GitHub release.
+#
+# Odin toolchain: pin ODIN_VERSION below and bump deliberately. dev-2026-08
+# is a HARD minimum, not a preference — the ARM CRC32C intrinsics and the
+# current runtime.default_temp_allocator_init signature both landed in it,
+# so older compilers fail to build rather than degrade.
+
+name: build
+
+on:
+  push:
+    branches: [master, main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  ODIN_VERSION: dev-2026-08
+
+jobs:
+  test:
+    name: test (linux-amd64)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Odin
+        run: |
+          curl -fsSL -o odin.tar.gz \
+            "https://github.com/odin-lang/Odin/releases/download/${ODIN_VERSION}/odin-linux-amd64-${ODIN_VERSION}.tar.gz"
+          mkdir -p "$HOME/odin"
+          tar -xzf odin.tar.gz -C "$HOME/odin"
+          # The archive layout has shifted between releases; find the binary
+          # and put its directory on PATH so core/ and base/ resolve.
+          ODIN_DIR=$(dirname "$(find "$HOME/odin" -name odin -type f | head -1)")
+          chmod +x "$ODIN_DIR/odin"
+          echo "$ODIN_DIR" >> "$GITHUB_PATH"
+      - name: Versions
+        run: odin version
+      - name: Tests
+        run: |
+          odin test tests/munin
+          odin test tests/hugin
+
+  build:
+    name: build ${{ matrix.target }}
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-amd64
+            runner: ubuntu-24.04
+            asset: odin-linux-amd64
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+            asset: odin-linux-arm64
+          - target: macos-arm64
+            runner: macos-15
+            asset: odin-macos-arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Odin
+        run: |
+          curl -fsSL -o odin.tar.gz \
+            "https://github.com/odin-lang/Odin/releases/download/${ODIN_VERSION}/${{ matrix.asset }}-${ODIN_VERSION}.tar.gz"
+          mkdir -p "$HOME/odin"
+          tar -xzf odin.tar.gz -C "$HOME/odin"
+          ODIN_DIR=$(dirname "$(find "$HOME/odin" -name odin -type f | head -1)")
+          chmod +x "$ODIN_DIR/odin"
+          echo "$ODIN_DIR" >> "$GITHUB_PATH"
+
+      - name: Versions
+        run: odin version
+
+      # Run the suite on every target, not just linux-amd64. This is the
+      # job that would have caught the aligned-SIMD crash that only fired on
+      # x86-64 and passed on the arm64 dev machine.
+      - name: Tests
+        run: |
+          odin test tests/munin
+          odin test tests/hugin
+
+      - name: Build
+        run: odin build cmd/hrafnar -o:speed -out:bin/hrafnar
+
+      - name: Package
+        run: |
+          VER="${GITHUB_REF_NAME}"
+          [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] && VER="dev-${GITHUB_SHA::8}"
+          PKG="hrafnar-${VER}-${{ matrix.target }}"
+          mkdir -p "dist/$PKG"
+          cp bin/hrafnar README.md LICENSE hrafnar.config.example "dist/$PKG/"
+          tar -C dist -czf "dist/$PKG.tar.gz" "$PKG"
+          echo "PKG=$PKG" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.PKG }}
+          path: dist/*.tar.gz
+
+  release:
+    name: publish release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: dist/*.tar.gz
+          generate_release_notes: true

@@ -1,0 +1,35 @@
+# build output
+bin/
+
+# Odin writes the executable next to the package when -out: is omitted, so
+# these appear at the repo root after a bare `odin build <pkg>`.
+/hrafnar
+/hrafnar-debug
+/bench
+/loadtest
+
+# debug symbol bundles (macOS -debug builds)
+*.dSYM/
+
+# a real config lives next to the binary or in ~/.hrafnar; only the
+# example is tracked
+hrafnar.config
+
+# runtime artifacts if an index is ever created inside the repo
+*.log
+*.sock
+*.pid
+*.err
+index/
+work/
+
+# odin test binaries land in the package directory
+tests/munin/munin_tests*
+tests/hugin/hugin_tests*
+
+# bun / node, for contrib/loadtest.ts
+node_modules/
+bun.lockb
+
+# os noise
+.DS_Store

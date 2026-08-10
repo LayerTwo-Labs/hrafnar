@@ -1,0 +1,87 @@
+; hrafnar.config — copy next to where you run hrafnar, or to
+; ~/.hrafnar/hrafnar.config. Command-line flags override these values.
+; Comments start with ';' or '#'. Keys may also live at top level
+; (no section).
+
+[hugin]
+; Bitcoin Core blocks directory (the one containing blk*.dat).
+datadir = /Users/you/Library/Application Support/Bitcoin/blocks
+
+; Where hrafnar keeps its index (Munin databases, headers.dat, recent.log).
+index = /Users/you/.hrafnar/mainnet
+
+; Bulk-build scratch space. Default: <index>/work. The build spills up to
+; ~0.75x the datadir size here at its peak (freed as the build progresses
+; and deleted at the end); point it at a second disk to split the space
+; needs. The build logs its estimate up front.
+;work = /mnt/scratch/hrafnar-work
+
+; mainnet | testnet3 | signet | regtest | ecash | ecash-signet | ecash-regtest
+; (ecash = the ecash-com/bitcoin fork: Bitcoin's rules and address
+;  formats, ECX units, its own network magic; set `rpc` to your node's
+;  RPC port for mempool tracking)
+network = mainnet
+
+; Worker threads for the bulk build. Default: core count.
+;workers = 16
+
+; Keyspace partition bits. Default 12 (4096 buckets). Raise to 13-14 on
+; memory-constrained machines.
+;bucket_bits = 12
+
+; Reorg horizon in blocks. Default 100.
+;horizon = 100
+
+; Blocks that must age past the horizon before a promotion runs. Default 150.
+;
+; A promotion writes one run file per storage bucket no matter how many
+; blocks it covers, so a bigger batch costs about the same as a small one
+; while creating proportionally fewer runs — and runs are what the engine
+; later has to merge back together. Raising this makes the index do less
+; maintenance; lowering it keeps the in-memory recent tier smaller. The tier
+; holds horizon + promote_batch blocks, so 100 + 150 = ~250 blocks of rows.
+;promote_batch = 150
+
+; Compact index: 8-byte key prefixes verified against the chain at query
+; time. ~3x smaller on disk (~150GB vs ~450GB for mainnet); address
+; queries pay extra reads. Chosen at build time — changing it later means
+; rebuilding the index.
+;compact = on
+
+; --- mempool (unconfirmed transactions) --------------------------------
+; The daemon tracks bitcoind's mempool over JSON-RPC so balances include
+; pending transactions. Auth uses the datadir's .cookie automatically;
+; set rpc_user/rpc_pass instead if your node uses fixed credentials.
+;rpc = 127.0.0.1:8332
+;rpc_cookie = /home/you/.bitcoin/.cookie
+;rpc_user = youruser
+;rpc_pass = yourpass
+;mempool = off            ; set off to disable the mempool tier
+
+; --- electrum server ----------------------------------------------------
+; The Electrum wire protocol (1.4) is served BY DEFAULT on
+; 127.0.0.1:50001 — point Sparrow, Electrum, or BDK apps at it directly.
+; No TLS here: front with stunnel or nginx if you expose it beyond
+; localhost (bind 0.0.0.0 to allow that).
+;electrum = off              ; set off to disable serving wallets
+;electrum_bind = 127.0.0.1:50001
+;electrum_banner = my hrafnar server
+;electrum_max_history = 5000   ; refuse scripthash queries above this many
+                               ; history rows (protects the serve thread
+                               ; from whale-address scans; balance queries
+                               ; are never capped)
+
+; --- esplora HTTP API ---------------------------------------------------
+; Blockstream-esplora-compatible REST API: decoded transactions, address
+; pages, blocks, mempool, fee estimates — the API bdk_esplora and
+; explorer frontends speak. Zero additional disk (served from the same
+; index). No TLS: front with nginx (which also adds caching) to expose it.
+;esplora = on                ; off by default (the Electrum server is on)
+;esplora_bind = 127.0.0.1:3000
+
+; --- serving ------------------------------------------------------------
+; Threads executing queries (both protocols share the pool). Default:
+; half the core count, minimum 4. Raise it if a load test shows
+; throughput flat while latency climbs with client count — that means the
+; pool is the bottleneck. contrib/loadtest.ts measures exactly that.
+;query_workers = 8
