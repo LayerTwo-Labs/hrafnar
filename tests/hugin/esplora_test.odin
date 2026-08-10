@@ -7,6 +7,7 @@ import "core:encoding/json"
 import "core:fmt"
 import "core:net"
 import "core:strings"
+import "core:sync"
 import "core:testing"
 import "core:thread"
 import "core:time"
@@ -180,8 +181,7 @@ test_esplora_http :: proc(t: ^testing.T) {
 	th.init_context = context
 	thread.start(th)
 	defer {
-		hugin.daemon_request_stop()
-		defer hugin.daemon_clear_stop()
+		sync.atomic_store(&box.stop, true)
 		thread.join(th)
 		thread.destroy(th)
 	}
@@ -315,8 +315,7 @@ test_esplora_concurrent :: proc(t: ^testing.T) {
 	th.init_context = context
 	thread.start(th)
 	defer {
-		hugin.daemon_request_stop()
-		defer hugin.daemon_clear_stop()
+		sync.atomic_store(&box.stop, true)
 		thread.join(th)
 		thread.destroy(th)
 	}

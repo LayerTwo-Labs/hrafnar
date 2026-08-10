@@ -197,6 +197,16 @@ daemon_stop :: proc(index_dir: string) -> (err: Error) {
 @(private)
 stop_requested: bool
 
+// daemon_should_stop reports shutdown for one daemon instance. A caller
+// supplying its own flag is isolated from the process-global entirely.
+@(private = "file")
+daemon_should_stop :: proc(stop: ^bool) -> bool {
+	if stop != nil {
+		return sync.atomic_load(stop)
+	}
+	return sync.atomic_load(&stop_requested)
+}
+
 // stop_was_requested is checked from long-running build/catch-up loops so
 // SIGINT aborts promptly instead of being swallowed until serving starts.
 @(private)
@@ -232,9 +242,24 @@ daemon_state_snapshot :: proc(cfg: Config) -> (s: Daemon_State) {
 // daemon_run serves until SIGINT/SIGTERM. poll_seconds is the catch-up
 // interval. With no index present it bootstraps one with a full bulk
 // build before serving.
-daemon_run :: proc(cfg: Config, poll_seconds: int = 30, version: string = "hrafnar") -> (err: Error) {
+// stop: an optional per-instance shutdown flag. When supplied, this daemon
+// watches ONLY that flag and never reads or writes the process-global one.
+// That matters for in-process daemons (tests, embedders): the global is
+// shared, so one daemon shutting down used to cancel unrelated catch-ups
+// running concurrently — which is exactly how CI first went red.
+// Production passes nil and is driven by SIGINT/SIGTERM through the global.
+daemon_run :: proc(
+	cfg: Config,
+	poll_seconds: int = 30,
+	version: string = "hrafnar",
+	stop: ^bool = nil,
+) -> (
+	err: Error,
+) {
 	cfg := config_fill_defaults(cfg)
-	daemon_clear_stop()
+	if stop == nil {
+		daemon_clear_stop()
+	}
 	poll_seconds := max(poll_seconds, 1)
 
 	// First log line within milliseconds of start: the operator must never
@@ -473,7 +498,7 @@ daemon_run :: proc(cfg: Config, poll_seconds: int = 30, version: string = "hrafn
 	}
 	defer if nbio_acquired {nbio.release_thread_event_loop()}
 
-	for !sync.atomic_load(&stop_requested) {
+	for !daemon_should_stop(stop) {
 		if es_active {
 			// The nbio tick serves Electrum connections and paces the
 			// loop; the Unix socket is then polled without blocking.

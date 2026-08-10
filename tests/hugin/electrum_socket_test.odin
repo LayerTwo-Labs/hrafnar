@@ -17,6 +17,10 @@ Daemon_Box :: struct {
 	cfg:  hugin.Config,
 	err:  hugin.Error,
 	done: bool,
+	// Per-instance shutdown. Tests must NOT use the process-global stop
+	// flag: it is shared, so stopping one test's daemon cancelled catch-up
+	// in whatever other test happened to be running at the time.
+	stop: bool,
 }
 
 daemon_thread :: proc(t: ^thread.Thread) {
@@ -25,7 +29,7 @@ daemon_thread :: proc(t: ^thread.Thread) {
 	// serve loop resets the temp allocator every cycle (regression: the
 	// version string turned to garbage on the wire).
 	version := fmt.tprintf("hrafnar %s", "sockettest")
-	box.err = hugin.daemon_run(box.cfg, 1, version)
+	box.err = hugin.daemon_run(box.cfg, 1, version, &box.stop)
 	sync.atomic_store(&box.done, true)
 }
 
@@ -56,8 +60,7 @@ test_electrum_socket :: proc(t: ^testing.T) {
 	th.init_context = context
 	thread.start(th)
 	defer {
-		hugin.daemon_request_stop()
-		defer hugin.daemon_clear_stop()
+		sync.atomic_store(&box.stop, true)
 		thread.join(th)
 		thread.destroy(th)
 	}
@@ -205,8 +208,7 @@ test_electrum_concurrent_clients :: proc(t: ^testing.T) {
 	th.init_context = context
 	thread.start(th)
 	defer {
-		hugin.daemon_request_stop()
-		defer hugin.daemon_clear_stop()
+		sync.atomic_store(&box.stop, true)
 		thread.join(th)
 		thread.destroy(th)
 	}
@@ -283,8 +285,7 @@ test_worker_fault_containment :: proc(t: ^testing.T) {
 	th.init_context = quiet
 	thread.start(th)
 	defer {
-		hugin.daemon_request_stop()
-		defer hugin.daemon_clear_stop()
+		sync.atomic_store(&box.stop, true)
 		thread.join(th)
 		thread.destroy(th)
 	}
