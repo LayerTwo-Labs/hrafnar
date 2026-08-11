@@ -82,3 +82,28 @@ test_config_file_rejects_bad_input :: proc(t: ^testing.T) {
 	_, err3 := hugin.config_file_load(fmt.tprintf("%s/nope.config", dir))
 	testing.expect(t, err3 != nil, "missing file must error")
 }
+
+// The ecash fork (ecash-com/bitcoin) shifts every port +200 from Bitcoin's,
+// so its RPC listens on 8532, not 8332. hrafnar advertised ecash network
+// support while hardcoding Bitcoin's port, which surfaced as
+// Rpc_Unavailable on every mempool cycle — indistinguishable from bad
+// credentials, and the reason a real drynet4 node looked unreachable.
+@(test)
+test_rpc_default_port_per_network :: proc(t: ^testing.T) {
+	cases := []struct {
+		net:  hugin.Network,
+		port: int,
+	} {
+		{.Mainnet, 8332},
+		{.Testnet3, 18332},
+		{.Signet, 38332},
+		{.Regtest, 18443},
+		{.Ecash, 8532},
+		{.Ecash_Signet, 38532},
+		{.Ecash_Regtest, 18643},
+	}
+	for c in cases {
+		got := hugin.rpc_default_port(c.net)
+		testing.expectf(t, got == c.port, "%v: default rpc port %d, want %d", c.net, got, c.port)
+	}
+}

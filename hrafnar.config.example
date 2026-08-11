@@ -18,8 +18,8 @@ index = /Users/you/.hrafnar/mainnet
 
 ; mainnet | testnet3 | signet | regtest | ecash | ecash-signet | ecash-regtest
 ; (ecash = the ecash-com/bitcoin fork: Bitcoin's rules and address
-;  formats, ECX units, its own network magic; set `rpc` to your node's
-;  RPC port for mempool tracking)
+;  formats, ECX units, its own network magic. Its ports are Bitcoin's
+;  +200, so RPC defaults to 8532 here — no `rpc` line needed.)
 network = mainnet
 
 ; Worker threads for the bulk build. Default: core count.
@@ -52,8 +52,16 @@ network = mainnet
 ; The daemon tracks bitcoind's mempool over JSON-RPC so balances include
 ; pending transactions. Auth uses the datadir's .cookie automatically;
 ; set rpc_user/rpc_pass instead if your node uses fixed credentials.
+;
+; The default follows `network`, so you normally do not need this line:
+;   mainnet 8332   testnet 18332   signet 38332   regtest 18443
+;   ecash   8532   ecash-signet 38532   ecash-regtest 18643
+; The ecash fork shifts every port +200 from Bitcoin's. Pointing at the
+; wrong port shows up as a repeating "mempool sync failing ...
+; Rpc_Unavailable", which looks like a credentials problem but is not.
 ;rpc = 127.0.0.1:8332
-;rpc_cookie = /home/you/.bitcoin/.cookie
+;rpc_cookie = /home/you/.bitcoin/.cookie   ; the .cookie FILE, not its directory
+;                                          ; (a directory gives EISDIR)
 ;rpc_user = youruser
 ;rpc_pass = yourpass
 ;mempool = off            ; set off to disable the mempool tier

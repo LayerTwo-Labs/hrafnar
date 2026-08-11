@@ -32,12 +32,38 @@ Rpc_Client :: struct {
 // rpc_init resolves endpoint and credentials from the config. Auth
 // precedence: explicit rpc_user/rpc_pass, else the .cookie file (given or
 // derived as <datadir>/../.cookie — datadir points at blocks/).
+// rpc_default_port is the node's RPC port for a network. The ecash fork
+// (ecash-com/bitcoin) shifts every port by +200 from Bitcoin's — RPC 8532
+// against Bitcoin's 8332, verified against its chainparamsbase.cpp — so
+// defaulting to 8332 there just knocks on a closed door and reports
+// Rpc_Unavailable, which reads like a credentials problem.
+rpc_default_port :: proc(n: Network) -> int {
+	switch n {
+	case .Mainnet:
+		return 8332
+	case .Testnet3:
+		return 18332
+	case .Signet:
+		return 38332
+	case .Regtest:
+		return 18443
+	case .Ecash:
+		return 8532
+	case .Ecash_Signet:
+		return 38532
+	case .Ecash_Regtest:
+		return 18643
+	}
+	return 8332
+}
+
 rpc_init :: proc(rc: ^Rpc_Client, cfg: Config, allocator := context.allocator) -> (err: Error) {
 	rc.allocator = allocator
 
+	def_port := rpc_default_port(cfg.network)
 	url := cfg.rpc_url
 	if url == "" {
-		url = "127.0.0.1:8332"
+		url = fmt.tprintf("127.0.0.1:%d", def_port)
 	}
 	url = strings.trim_prefix(url, "http://")
 	url = strings.trim_suffix(url, "/")
@@ -46,7 +72,7 @@ rpc_init :: proc(rc: ^Rpc_Client, cfg: Config, allocator := context.allocator) -
 		if addr, aok := net.parse_ip4_address(url); aok {
 			ep = net.Endpoint {
 				address = addr,
-				port    = 8332,
+				port    = def_port,
 			}
 		} else {
 			log.errorf("hugin: cannot parse rpc endpoint %q (want host:port)", url)
@@ -54,7 +80,7 @@ rpc_init :: proc(rc: ^Rpc_Client, cfg: Config, allocator := context.allocator) -
 		}
 	}
 	if ep.port == 0 {
-		ep.port = 8332
+		ep.port = def_port
 	}
 	rc.endpoint = ep
 
@@ -91,6 +117,19 @@ rpc_destroy :: proc(rc: ^Rpc_Client) {
 rpc_load_cookie :: proc(rc: ^Rpc_Client) -> (err: Error) {
 	data, rerr := os.read_entire_file(rc.cookie_path, context.temp_allocator)
 	if rerr != nil {
+		// Name the path. The bare errno is not actionable: EISDIR means
+		// rpc_cookie points at a directory rather than the .cookie file
+		// inside it, and ENOENT usually means the node has not started yet
+		// or keeps its datadir somewhere else.
+		// warn, not error: the daemon degrades to confirmed-only rather
+		// than failing — and Odin's test runner fails any test whose code
+		// calls log.errorf, which the daemon tests legitimately hit since
+		// they run without a bitcoind.
+		log.warnf(
+			"hugin: cannot read the bitcoind auth cookie at %q: %v (set rpc_cookie to the .cookie FILE, or rpc_user/rpc_pass instead)",
+			rc.cookie_path,
+			rerr,
+		)
 		return rerr
 	}
 	delete(rc.auth, rc.allocator)
