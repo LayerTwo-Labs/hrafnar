@@ -122,7 +122,26 @@ config_file_load :: proc(
 		if strings.has_prefix(trimmed, "#") {
 			continue
 		}
-		strings.write_string(&cleaned, line)
+		// Strip inline comments. core:encoding/ini keeps everything after
+		// the '=', so `horizon = 100   ; reorg horizon` parsed as the value
+		// "100   ; reorg horizon" and the whole file was rejected as
+		// malformed — while hrafnar.config.example is written in exactly
+		// that style throughout. Uncommenting any documented line made the
+		// daemon refuse to start.
+		//
+		// Only a ';' or '#' PRECEDED BY WHITESPACE starts a comment, so a
+		// value containing one (a banner, a password) survives. A line that
+		// begins with ';' is a commented-out setting and is left alone.
+		out := line
+		if !strings.has_prefix(trimmed, ";") {
+			for i in 1 ..< len(out) {
+				if (out[i] == ';' || out[i] == '#') && (out[i - 1] == ' ' || out[i - 1] == '\t') {
+					out = out[:i]
+					break
+				}
+			}
+		}
+		strings.write_string(&cleaned, out)
 		strings.write_byte(&cleaned, '\n')
 	}
 

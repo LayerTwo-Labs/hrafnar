@@ -2,6 +2,7 @@ package hugin_tests
 
 import "core:fmt"
 import "core:os"
+import "core:strings"
 import "core:testing"
 
 import hugin "../../hugin"
@@ -106,4 +107,77 @@ test_rpc_default_port_per_network :: proc(t: ^testing.T) {
 		got := hugin.rpc_default_port(c.net)
 		testing.expectf(t, got == c.port, "%v: default rpc port %d, want %d", c.net, got, c.port)
 	}
+}
+
+// The shipped hrafnar.config.example must actually parse with every
+// documented setting enabled.
+//
+// It did not. `core:encoding/ini` keeps everything after the '=', so
+// `horizon = 100   ; reorg horizon` parsed as the value "100   ; reorg
+// horizon" and the WHOLE FILE was rejected as malformed — while the example
+// is written in that style throughout. Uncommenting any documented line made
+// the daemon refuse to start with "unknown key or malformed value", naming
+// no key.
+//
+// This reads the real example file rather than a copy, so the two cannot
+// drift apart.
+@(test)
+test_shipped_config_example_parses_uncommented :: proc(t: ^testing.T) {
+	// `odin test tests/hugin` runs from the repository root; the relative
+	// path is tried too so the test also works if invoked from its own
+	// directory.
+	src, ok := os.read_entire_file("hrafnar.config.example", context.temp_allocator)
+	if ok != nil {
+		src, ok = os.read_entire_file("../../hrafnar.config.example", context.temp_allocator)
+	}
+	testing.expect(t, ok == nil, "cannot read hrafnar.config.example from repo root or ../../")
+	if ok != nil {return}
+
+	// Uncomment every line that is a commented-out `;key = value`, leaving
+	// prose and section banners alone.
+	b := strings.builder_make(context.temp_allocator)
+	text := string(src)
+	enabled := 0
+	for line in strings.split_lines_iterator(&text) {
+		trimmed := strings.trim_space(line)
+		out := line
+		if strings.has_prefix(trimmed, ";") {
+			rest := strings.trim_space(trimmed[1:])
+			eq := strings.index_byte(rest, '=')
+			if eq > 0 {
+				key := strings.trim_space(rest[:eq])
+				looks_like_key := len(key) > 0
+				for c in key {
+					if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '_' || c == '-' || c >= '0' && c <= '9') {
+						looks_like_key = false
+						break
+					}
+				}
+				if looks_like_key {
+					out = rest
+					enabled += 1
+				}
+			}
+		}
+		strings.write_string(&b, out)
+		strings.write_byte(&b, '\n')
+	}
+	testing.expectf(t, enabled >= 10, "expected the example to document many settings, uncommented %d", enabled)
+
+	dir, derr := os.make_directory_temp("", "hugin_cfgex_*", context.allocator)
+	testing.expect_value(t, derr, nil)
+	if derr != nil {return}
+	defer {os.remove_all(dir); delete(dir)}
+	path := fmt.tprintf("%s/hrafnar.config", dir)
+	testing.expect_value(t, os.write_entire_file(path, transmute([]byte)strings.to_string(b)), nil)
+
+	fc, err := hugin.config_file_load(path)
+	defer hugin.config_file_destroy(&fc)
+	testing.expectf(
+		t,
+		err == nil,
+		"hrafnar.config.example does not parse with its %d documented settings enabled: %v",
+		enabled,
+		err,
+	)
 }

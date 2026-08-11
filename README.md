@@ -476,6 +476,50 @@ noticeably slower. The default exact index is the right choice unless disk is ti
 **One-shot commands:** `hrafnar index` runs just the bulk build (no serving);
 `hrafnar catchup` runs one catch-up cycle — useful from cron instead of a daemon.
 
+## Running against ecash / drynet4
+
+[`ecash-com/bitcoin`](https://github.com/ecash-com/bitcoin) is a Bitcoin Core fork
+(the ECX full node) running the `drynet4` network. It keeps Bitcoin's address formats
+and script rules, so hrafnar indexes it with no special handling — but **every port is
+shifted +200 from Bitcoin's** (RPC 8532, P2P 8533) and the network magic differs, so
+`network` has to be set.
+
+```ini
+[hugin]
+datadir  = /home/you/.drynet4/blocks     ; the node's blocks/ directory
+index    = /home/you/.hrafnar/drynet4
+network  = ecash                         ; magic ec a5 d4 04, ECX units
+
+; Mempool: the RPC port defaults to 8532 for this network, and the auth cookie is
+; found automatically at <datadir>/../.cookie — so neither usually needs setting.
+;rpc        = 127.0.0.1:8532
+;rpc_cookie = /home/you/.drynet4/.cookie ; the .cookie FILE, not its directory
+
+; Serve wallets and apps
+electrum      = on
+electrum_bind = 0.0.0.0:50001
+esplora       = on
+esplora_bind  = 0.0.0.0:3000
+```
+
+Bind to `127.0.0.1` instead if you are not exposing the ports, and put stunnel or nginx
+in front if you are — there is no TLS in-process (see [Electrum server](#electrum-server)).
+
+Two things that bite:
+
+- **Wrong RPC port** shows up as a repeating `mempool sync failing (is bitcoind's RPC
+  reachable?): Rpc_Unavailable`. That reads like an auth problem and sends you off
+  checking cookies, but it usually means something is pointing at 8332. Confirm with
+  `bitcoin-cli -rpcport=8532 getmempoolinfo`.
+- **The node must be built with ZMQ** (`-DWITH_ZMQ=ON`) if you also intend to run the
+  BIP300/301 enforcer alongside it. hrafnar itself does not need ZMQ.
+
+**You do not need the enforcer to run hrafnar.** `bip300301_enforcer` holds the
+BIP300/301 sidechain rules and is what a sidechain talks to; indexing, wallets and
+explorers only need the node. Note that `OP_DRIVECHAIN` outputs (a repurposed
+`OP_NOP5`) have no address representation, so they index by scripthash like any other
+output but report no address — which is correct, not a gap.
+
 ## How it works
 
 The bulk build is a three-phase, merge-free parallel pipeline: workers parse blocks
