@@ -20,7 +20,7 @@ import "core:time"
 
 import hugin "../../hugin"
 
-VERSION :: "0.21.0 (2026-08-11.1)"
+VERSION :: "0.22.0 (2026-08-21.1)"
 
 COMMANDS_USAGE :: `hrafnar — Bitcoin address indexer
 
