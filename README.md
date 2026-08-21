@@ -505,6 +505,19 @@ esplora_bind  = 0.0.0.0:3000
 Bind to `127.0.0.1` instead if you are not exposing the ports, and put stunnel or nginx
 in front if you are — there is no TLS in-process (see [Electrum server](#electrum-server)).
 
+**These networks respin, and each run changes the network magic.** `network = ecash`
+carries drynet4's (`eca5d404`); for any other run set `magic` alongside it rather than
+waiting for a hrafnar release:
+
+```ini
+network = ecash
+magic   = eca5a104        ; alphanet (drynet4 is eca5d404)
+```
+
+Only the magic differs between runs — ports, address formats and units are unchanged,
+so everything else still comes from `network`. A wrong value surfaces immediately as
+`Bad_Magic` on the first blk file rather than as bad data.
+
 Two things that bite:
 
 - **Wrong RPC port** shows up as a repeating `mempool sync failing (is bitcoind's RPC

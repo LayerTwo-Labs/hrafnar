@@ -19,7 +19,8 @@ index = /Users/you/.hrafnar/mainnet
 ; mainnet | testnet3 | signet | regtest | ecash | ecash-signet | ecash-regtest
 ; (ecash = the ecash-com/bitcoin fork: Bitcoin's rules and address
 ;  formats, ECX units, its own network magic. Its ports are Bitcoin's
-;  +200, so RPC defaults to 8532 here — no `rpc` line needed.)
+;  +200, so RPC defaults to 8532 here — no `rpc` line needed. The test
+;  networks respin, and each run changes the magic; see `magic` below.)
 network = mainnet
 
 ; Worker threads for the bulk build. Default: core count.
@@ -31,6 +32,15 @@ network = mainnet
 
 ; Reorg horizon in blocks. Default 100.
 ;horizon = 100
+
+; Network magic override, 8 hex digits, as it appears in the blk files.
+; Only needed for the ecash test networks, which respin regularly and give
+; each run its own magic byte:
+;   drynet4   eca5d404   (what `network = ecash` uses by default)
+;   alphanet  eca5a104
+; Everything else — units, address formats, RPC port — still comes from
+; `network`. A wrong value shows up as Bad_Magic on the first blk file.
+;magic = eca5a104
 
 ; Blocks that must age past the horizon before a promotion runs. Default 150.
 ;

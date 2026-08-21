@@ -10,6 +10,7 @@ package hugin
 //   workers     = 8
 //   bucket_bits = 12
 //   horizon     = 100
+//   magic       = eca5a104
 //   promote_batch = 150
 //
 // Keys may live in the global (sectionless) scope or under [hugin]; other
@@ -51,6 +52,7 @@ File_Config :: struct {
 	workers:     int,
 	bucket_bits: int,
 	horizon:     int,
+	magic:       string,
 	promote_batch: int,
 	allocator:   runtime.Allocator,
 }
@@ -219,6 +221,13 @@ config_file_load :: proc(
 			case:
 				return fc, Usage_Error.Bad_Config
 			}
+		case "magic":
+			// Validate here so a typo is caught at load, naming the key,
+			// rather than surfacing later as Bad_Magic on every blk file.
+			if _, mok := magic_parse(value); !mok {
+				return fc, Usage_Error.Bad_Config
+			}
+			set_config_string(&fc.magic, value, allocator) or_return
 		case "network":
 			set_config_string(&fc.network, value, allocator) or_return
 		case "workers":

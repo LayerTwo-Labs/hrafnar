@@ -57,6 +57,7 @@ Options :: struct {
 	bucket_bits: uint `args:"name=bucket-bits" usage:"keyspace partition bits (default 12)"`,
 	horizon:     uint `usage:"reorg horizon in blocks (default 100)"`,
 	promote_batch: uint `usage:"blocks below the horizon before promoting (default 150)"`,
+	magic:       string `usage:"network magic override, 8 hex digits (e.g. eca5a104)"`,
 	max_height:  int `args:"name=max-height" usage:"index only up to this height (index only)"`,
 	poll:        uint `usage:"daemon: catch-up interval in seconds (default 30)"`,
 	foreground:  bool `usage:"daemon: stay attached to the terminal (default: detach into the background)"`,
@@ -128,6 +129,7 @@ main :: proc() {
 		if fc.bucket_bits >= 0 {opt.bucket_bits = uint(fc.bucket_bits)}
 		if fc.horizon >= 0 {opt.horizon = uint(fc.horizon)}
 		if fc.promote_batch >= 0 {opt.promote_batch = uint(fc.promote_batch)}
+		if fc.magic != "" && opt.magic == "" {opt.magic = fc.magic}
 		if fc.rpc_url != "" {file_rpc_url = strings.clone(fc.rpc_url)}
 		if fc.rpc_cookie != "" {file_rpc_cookie = strings.clone(fc.rpc_cookie)}
 		if fc.rpc_user != "" {file_rpc_user = strings.clone(fc.rpc_user)}
@@ -167,6 +169,17 @@ main :: proc() {
 		usage_exit(2)
 	}
 
+	// Parsed here so a bad --magic fails before anything opens an index.
+	cfg_magic: [4]u8
+	if opt.magic != "" {
+		m, mok := hugin.magic_parse(opt.magic)
+		if !mok {
+			fmt.eprintfln("bad --magic %q: want 8 hex digits, e.g. eca5a104", opt.magic)
+			os.exit(2)
+		}
+		cfg_magic = m
+	}
+
 	cfg := hugin.Config {
 		datadir     = opt.datadir,
 		index_dir   = opt.index,
@@ -174,6 +187,7 @@ main :: proc() {
 		bucket_bits = u32(opt.bucket_bits),
 		horizon     = u32(opt.horizon),
 		promote_batch = u32(opt.promote_batch),
+		magic       = cfg_magic,
 		workers     = opt.workers,
 	}
 	cfg.rpc_url = file_rpc_url

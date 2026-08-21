@@ -181,3 +181,52 @@ test_shipped_config_example_parses_uncommented :: proc(t: ^testing.T) {
 		err,
 	)
 }
+
+// The ecash test networks respin regularly and each run gets a new magic
+// byte — drynet4 is ec a5 d4 04, alphanet is ec a5 a1 04, differing only
+// in byte 2. Pinning every run in the Network enum would mean a hrafnar
+// release per respin, so `magic` overrides it while `network` still
+// supplies units, address handling and the RPC port.
+@(test)
+test_magic_override :: proc(t: ^testing.T) {
+	// Parsing, including the forms a user will actually type.
+	cases := []struct {
+		text: string, // "in" is a keyword in Odin
+		want: [4]u8,
+		ok:   bool,
+	} {
+		{"eca5a104", {0xEC, 0xA5, 0xA1, 0x04}, true}, // alphanet
+		{"ECA5D404", {0xEC, 0xA5, 0xD4, 0x04}, true}, // drynet4, uppercase
+		{"0xeca5a134", {0xEC, 0xA5, 0xA1, 0x34}, true}, // alphanet regtest, 0x prefix
+		{"eca5a1", {}, false}, // too short
+		{"eca5a1040", {}, false}, // too long
+		{"eca5a1zz", {}, false}, // not hex
+		{"", {}, false},
+	}
+	for c in cases {
+		got, ok := hugin.magic_parse(c.text)
+		testing.expectf(t, ok == c.ok, "magic_parse(%q) ok=%v, want %v", c.text, ok, c.ok)
+		if c.ok {
+			testing.expectf(t, got == c.want, "magic_parse(%q) = %v, want %v", c.text, got, c.want)
+		}
+	}
+
+	// An override wins over the network's own magic; without one the
+	// network's is used.
+	alpha, _ := hugin.magic_parse("eca5a104")
+	with_override := hugin.Config {
+		network = .Ecash,
+		magic   = alpha,
+	}
+	testing.expect_value(t, hugin.config_magic(with_override), alpha)
+
+	plain := hugin.Config {
+		network = .Ecash,
+	}
+	testing.expect_value(t, hugin.config_magic(plain), hugin.network_magic(.Ecash))
+	testing.expectf(
+		t,
+		hugin.config_magic(plain) != alpha,
+		"drynet4 and alphanet magic must differ, or this override is pointless",
+	)
+}

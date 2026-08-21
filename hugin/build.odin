@@ -167,7 +167,7 @@ build_index :: proc(cfg: Config, max_height: int = -1, allocator := context.allo
 				return Usage_Error.Cancelled
 			}
 			it: Blk_Record_Iter
-			blk_record_iter_init(&it, &f, network_magic(cfg.network))
+			blk_record_iter_init(&it, &f, config_magic(cfg))
 			for {
 				rec, ok := blk_record_iter_next(&it)
 				if !ok {break}

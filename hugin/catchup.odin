@@ -175,7 +175,7 @@ catchup_run :: proc(
 		blkfile_map(&f) or_return
 		scanned += 1
 		it: Blk_Record_Iter
-		blk_record_iter_init(&it, &f, network_magic(cfg.network))
+		blk_record_iter_init(&it, &f, config_magic(cfg))
 		for {
 			rec, ok := blk_record_iter_next(&it)
 			if !ok {break}

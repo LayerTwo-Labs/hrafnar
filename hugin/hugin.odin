@@ -60,6 +60,46 @@ unit_label :: proc(n: Network) -> string {
 	return "BTC"
 }
 
+// config_magic is the magic to frame blk records with: the explicit
+// override when one is set, otherwise the network's own.
+config_magic :: proc(cfg: Config) -> [4]u8 {
+	if cfg.magic != {0, 0, 0, 0} {
+		return cfg.magic
+	}
+	return network_magic(cfg.network)
+}
+
+// magic_parse reads 8 hex digits ("eca5a104") into file-order magic bytes.
+magic_parse :: proc(s: string) -> (out: [4]u8, ok: bool) {
+	str := s
+	if len(str) >= 2 && (str[:2] == "0x" || str[:2] == "0X") {
+		str = str[2:]
+	}
+	if len(str) != 8 {
+		return {}, false
+	}
+	nib :: proc(c: u8) -> (u8, bool) {
+		switch {
+		case c >= '0' && c <= '9':
+			return c - '0', true
+		case c >= 'a' && c <= 'f':
+			return c - 'a' + 10, true
+		case c >= 'A' && c <= 'F':
+			return c - 'A' + 10, true
+		}
+		return 0, false
+	}
+	for i in 0 ..< 4 {
+		hi, hok := nib(str[i * 2])
+		lo, lok := nib(str[i * 2 + 1])
+		if !hok || !lok {
+			return {}, false
+		}
+		out[i] = hi << 4 | lo
+	}
+	return out, true
+}
+
 // Magic bytes as they appear in the file, in file order.
 network_magic :: proc(n: Network) -> [4]u8 {
 	switch n {
@@ -91,6 +131,14 @@ Config :: struct {
 	// The build spills roughly 5x the history row volume here at peak;
 	// pointing it at a separate disk halves the space one volume needs.
 	network:     Network,
+	// Optional network-magic override, as it appears in the blk file.
+	// The ecash test networks respin regularly and each run gets a new
+	// magic byte (drynet4 ec a5 d4 04, alphanet ec a5 a1 04), so pinning
+	// every run in the Network enum would mean a hrafnar release per
+	// respin. Set `magic` in the config instead; everything else about
+	// the network (units, address formats, RPC port) still comes from
+	// `network`. Zero means "use the network's own magic".
+	magic:       [4]u8,
 	bucket_bits: u32, // default 12
 	horizon:     u32, // reorg horizon in blocks, default 100
 	promote_batch: u32, // min blocks below the horizon before promoting, default 24
