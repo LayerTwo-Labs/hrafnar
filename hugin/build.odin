@@ -119,6 +119,7 @@ build_index :: proc(cfg: Config, max_height: int = -1, allocator := context.allo
 
 	ensure_dir(cfg.index_dir) or_return
 	format_write(cfg.index_dir, cfg.compact) or_return
+	chain_id_write(cfg.index_dir, config_magic(cfg)) or_return
 
 	// --- enumerate and map ------------------------------------------------
 	b.files = blkfile_enumerate(cfg.datadir, allocator) or_return

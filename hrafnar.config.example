@@ -33,6 +33,11 @@ network = mainnet
 ; Reorg horizon in blocks. Default 100.
 ;horizon = 100
 
+; One index directory per chain. The index records the magic it was built
+; with and refuses to open under a config for a different chain — the ecash
+; networks share Bitcoin's address formats, so a mismatch would otherwise
+; merge two chains' rows and serve balances that are quietly wrong.
+;
 ; Network magic override, 8 hex digits, as it appears in the blk files.
 ; Only needed for the ecash test networks, which respin regularly and give
 ; each run its own magic byte:

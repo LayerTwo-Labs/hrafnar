@@ -1,6 +1,7 @@
 package hugin_tests
 
 import "core:fmt"
+import "core:log"
 import "core:os"
 import "core:strings"
 import "core:testing"
@@ -229,4 +230,69 @@ test_magic_override :: proc(t: ^testing.T) {
 		hugin.config_magic(plain) != alpha,
 		"drynet4 and alphanet magic must differ, or this override is pointless",
 	)
+}
+
+// An index must refuse to be opened against a different chain.
+//
+// The ecash test networks share Bitcoin's address formats and differ only
+// in network magic, so pointing an alphanet config at a Bitcoin index
+// directory does not look obviously wrong — it would merge two chains'
+// rows and serve balances that are quietly incorrect. The index records
+// the magic it was built with and this check refuses a mismatch.
+@(test)
+test_index_refuses_a_different_chain :: proc(t: ^testing.T) {
+	dir, derr := os.make_directory_temp("", "hugin_chain_*", context.allocator)
+	testing.expect_value(t, derr, nil)
+	if derr != nil {return}
+	defer {os.remove_all(dir); delete(dir)}
+
+	btc := hugin.Config {
+		index_dir = dir,
+		network   = .Mainnet,
+	}
+	alpha_magic, _ := hugin.magic_parse("eca5a104")
+	alpha := hugin.Config {
+		index_dir = dir,
+		network   = .Ecash,
+		magic     = alpha_magic,
+	}
+
+	// No marker yet: an older index is adopted, not rejected.
+	testing.expect_value(t, hugin.chain_id_check(alpha), nil)
+
+	// Built as Bitcoin mainnet...
+	testing.expect_value(t, hugin.chain_id_write(dir, hugin.config_magic(btc)), nil)
+	testing.expect_value(t, hugin.chain_id_check(btc), nil)
+
+	// ...must refuse an alphanet config pointed at it.
+	{
+		ctx := context
+		ctx.logger = log.nil_logger() // the check logs at error level
+		context = ctx
+		err := hugin.chain_id_check(alpha)
+		testing.expectf(
+			t,
+			err == hugin.Usage_Error.Bad_Config,
+			"opening a Bitcoin index with an alphanet config returned %v, want Bad_Config",
+			err,
+		)
+	}
+
+	// And drynet4 vs alphanet — same network enum, different run — must
+	// also be caught, which is the case a `network` check alone would miss.
+	dry := hugin.Config {
+		index_dir = dir,
+		network   = .Ecash,
+	}
+	testing.expect_value(t, hugin.chain_id_write(dir, hugin.config_magic(dry)), nil)
+	{
+		ctx := context
+		ctx.logger = log.nil_logger()
+		context = ctx
+		testing.expectf(
+			t,
+			hugin.chain_id_check(alpha) == hugin.Usage_Error.Bad_Config,
+			"a drynet4 index must not be opened with an alphanet config",
+		)
+	}
 }

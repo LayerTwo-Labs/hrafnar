@@ -182,6 +182,51 @@ config_fill_defaults :: proc(cfg: Config) -> (out: Config) {
 // the source of truth once an index exists; a mismatch demands a rebuild.
 FORMAT_FILE_NAME :: "FORMAT"
 
+// The CHAIN file records which chain an index holds, as the magic hex the
+// blocks were framed with. Without it nothing stopped an index directory
+// being reused across chains — and since the ecash test networks share
+// Bitcoin's address formats, an alphanet index written into a Bitcoin one
+// would not look obviously wrong. It would merge two chains' rows and
+// serve balances that are quietly incorrect, which is the one failure this
+// project refuses to have.
+CHAIN_FILE_NAME :: "CHAIN"
+
+chain_id_write :: proc(index_dir: string, magic: [4]u8) -> (err: Error) {
+	path := fmt.tprintf("%s/%s", index_dir, CHAIN_FILE_NAME)
+	content := fmt.tprintf("%02x%02x%02x%02x\n", magic[0], magic[1], magic[2], magic[3])
+	if werr := os.write_entire_file(path, transmute([]byte)content); werr != nil {
+		return werr
+	}
+	return nil
+}
+
+// chain_id_check refuses an index built from a different chain. An index
+// with no CHAIN file predates this and is adopted rather than rejected,
+// the same way a pre-FORMAT index is treated as exact.
+chain_id_check :: proc(cfg: Config) -> (err: Error) {
+	path := fmt.tprintf("%s/%s", cfg.index_dir, CHAIN_FILE_NAME)
+	wanted := config_magic(cfg)
+	data, rerr := os.read_entire_file(path, context.temp_allocator)
+	if rerr != nil {
+		return nil // no CHAIN file: an older index, or one still being built
+	}
+	on_disk := strings.trim_space(string(data))
+	have, ok := magic_parse(on_disk)
+	if !ok {
+		return nil // unreadable marker: do not block on it
+	}
+	if have != wanted {
+		log.errorf(
+			"hugin: index at %s holds a different chain (magic %s) than this config selects (%s) — point `index` at a fresh directory for this network, or fix `network`/`magic`",
+			cfg.index_dir,
+			on_disk,
+			fmt.tprintf("%02x%02x%02x%02x", wanted[0], wanted[1], wanted[2], wanted[3]),
+		)
+		return Usage_Error.Bad_Config
+	}
+	return nil
+}
+
 format_write :: proc(index_dir: string, compact: bool) -> (err: Error) {
 	path := fmt.tprintf("%s/%s", index_dir, FORMAT_FILE_NAME)
 	content := "compact\n" if compact else "exact\n"
@@ -203,6 +248,7 @@ format_read :: proc(index_dir: string) -> (compact: bool) {
 // format_check errors loudly when the on-disk format disagrees with the
 // configuration — serving would otherwise silently misread every row.
 format_check :: proc(cfg: Config) -> (err: Error) {
+	chain_id_check(cfg) or_return
 	on_disk := format_read(cfg.index_dir)
 	if on_disk != cfg.compact {
 		log.errorf(
