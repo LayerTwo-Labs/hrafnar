@@ -496,16 +496,24 @@ test_build_worker_count_respects_memory :: proc(t: ^testing.T) {
 	}
 	testing.expect_value(t, hugin.workers_for_memory_for_test(tight, 32, 512 * MB, "phase 3"), 1)
 
-	// Not even one worker fits: 0 means "refuse", and the caller turns that
-	// into an error before doing 40 minutes of work.
+	// Not even one worker fits by the estimate: clamp to 1 and warn, never
+	// abort. The first version returned 0 and the caller turned that into
+	// an error — which refused a build that had previously completed phase
+	// after phase, because the estimate for ONE worker came out roughly
+	// equal to the whole build's measured peak. An estimate this coarse
+	// must not be able to stop a build.
 	{
 		ctx := context
-		ctx.logger = log.nil_logger() // it logs the reason at error level
+		ctx.logger = log.nil_logger() // it warns with the reason
 		context = ctx
 		impossible := hugin.Config {
 			memory_budget = 256,
 		}
-		testing.expect_value(t, hugin.workers_for_memory_for_test(impossible, 32, 4096 * MB, "phase 3"), 0)
+		testing.expectf(
+			t,
+			hugin.workers_for_memory_for_test(impossible, 32, 4096 * MB, "phase 3") == 1,
+			"an over-large estimate must clamp to one worker, not abort the build",
+		)
 	}
 
 	// An unknown per-worker cost must not silently collapse to 1 worker.

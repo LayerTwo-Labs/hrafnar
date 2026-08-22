@@ -119,8 +119,12 @@ build_set_err :: proc(b: ^Build, err: Error) {
 // slower than it could is a nuisance, one that dies at 90% is an hour lost
 // with nothing to show.
 //
-// Returns 0 when even a single worker will not fit, which the caller must
-// treat as "refuse now, with an explanation".
+// Never returns 0. An estimate this coarse must not be able to abort a
+// build: the first version did, and refused a build that had previously
+// run to 15.8 GB peak with many workers — the estimate for ONE worker came
+// out at 15 GB, wrong by roughly the worker count, and it only discovered
+// this after 30 minutes of phase 2. Clamping to a single worker is the
+// minimum-memory configuration and is strictly better than giving up.
 // Exposed for tests: the arithmetic is the whole point of this, and it is
 // not otherwise reachable without running a multi-hour build.
 workers_for_memory_for_test :: proc(cfg: Config, want, per_worker_bytes: int, phase: string) -> int {
@@ -185,6 +189,18 @@ return fits
 
 // scatter_largest_bucket_bytes is the biggest bucket the phase will load,
 // from the row counts the scatter already kept.
+@(private = "file")
+scatter_largest_bucket_rows :: proc(sc: ^Scatter) -> u64 {
+	most: u64
+	for i in 0 ..< sc.n_buckets {
+		n := sync.atomic_load(&sc.rows[i])
+		if n > most {
+			most = n
+		}
+	}
+	return most
+}
+
 @(private = "file")
 scatter_largest_bucket_bytes :: proc(sc: ^Scatter, row_size: int) -> int {
 most: u64
@@ -418,12 +434,18 @@ build_index :: proc(cfg: Config, max_height: int = -1, allocator := context.allo
 	// A phase-2 worker holds both join buckets plus an equal-sized sort
 	// buffer for each. Freed memory is not necessarily returned to the OS,
 	// so an over-wide phase 2 also raises the baseline phase 3 starts from.
-	p2_worker := 2 * scatter_largest_bucket_bytes(&b.sc_joinf, JOINF_ROW_SIZE) +
-		2 * scatter_largest_bucket_bytes(&b.sc_joins, JOINS_ROW_SIZE)
+	p2_joinf := scatter_largest_bucket_bytes(&b.sc_joinf, JOINF_ROW_SIZE)
+	p2_joins := scatter_largest_bucket_bytes(&b.sc_joins, JOINS_ROW_SIZE)
+	p2_worker := 2 * p2_joinf + 2 * p2_joins
+	// Printed so the estimate can be checked against actual RSS. The
+	// arithmetic behind these caps is not yet validated on a real chain.
+	log.infof(
+		"hugin: phase 2: largest joinf bucket %d MB, joins %d MB, rss %d MB",
+		p2_joinf / (1024 * 1024),
+		p2_joins / (1024 * 1024),
+		proc_rss_mb(),
+	)
 	workers2 := workers_for_memory(cfg, workers, p2_worker, "phase 2")
-	if workers2 < 1 {
-		return Usage_Error.Bad_Config
-	}
 	log.infof(
 		"hugin: phase 2: joining %d buckets on %d workers (each: load, sort, derive history rows, ingest spends)",
 		b.n_buckets,
@@ -467,14 +489,17 @@ build_index :: proc(cfg: Config, max_height: int = -1, allocator := context.allo
 	// Each worker loads a whole bucket and allocates an equal-sized sort
 	// buffer, so this is the phase whose peak memory is both largest and
 	// exactly predictable.
-	p3_bucket := max(
-		scatter_largest_bucket_bytes(&b.sc_history, HISTORY_ROW_SIZE),
-		scatter_largest_bucket_bytes(&b.sc_txloc, TXLOC_ROW_SIZE),
+	p3_hist := scatter_largest_bucket_bytes(&b.sc_history, HISTORY_ROW_SIZE)
+	p3_txloc := scatter_largest_bucket_bytes(&b.sc_txloc, TXLOC_ROW_SIZE)
+	p3_bucket := max(p3_hist, p3_txloc)
+	log.infof(
+		"hugin: phase 3: largest history bucket %d MB (%d rows), txloc %d MB (%d rows)",
+		p3_hist / (1024 * 1024),
+		scatter_largest_bucket_rows(&b.sc_history),
+		p3_txloc / (1024 * 1024),
+		scatter_largest_bucket_rows(&b.sc_txloc),
 	)
 	workers3 := workers_for_memory(cfg, workers, p3_bucket * 2, "phase 3")
-	if workers3 < 1 {
-		return Usage_Error.Bad_Config
-	}
 	log.infof(
 		"hugin: phase 3: sorting and ingesting %d history+txloc buckets on %d workers (largest bucket %d MB, rss %d MB)",
 		2 * b.n_buckets,
