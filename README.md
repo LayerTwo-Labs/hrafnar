@@ -461,6 +461,14 @@ network = mainnet                     ; mainnet|testnet3|signet|regtest|ecash|ec
 ;query_workers = 8                    ; query threads (default: half the cores, min 4)
 ```
 
+**Memory:** the build sizes its thread pools from available memory, not the core count.
+A phase-3 worker holds one bucket plus an equal-sized sort buffer, so peak use is
+`workers x 2 x bucket size` — hrafnar knows the bucket sizes before the phase starts and
+caps concurrency to fit, logging what it chose and why. If not even one worker fits it
+refuses up front rather than dying deep into a long build. `memory_budget` (MB)
+overrides the default of two thirds of `MemAvailable`; cgroup limits are honoured.
+Worth knowing: a large `dbcache` in bitcoind is memory the build cannot have.
+
 **Disk space:** the initial build spills sort scratch — up to ~0.75x the datadir size at
 peak, freed as the build progresses — and the final index is ~0.7x the datadir. Budget
 **~1.5x your datadir** free on one volume, or point `work` at a second disk to split it.

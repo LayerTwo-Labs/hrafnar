@@ -105,6 +105,98 @@ build_set_err :: proc(b: ^Build, err: Error) {
 
 // build_index runs the full bulk build. max_height truncates the chain for
 // partial builds (negative = full chain).
+// workers_for_memory caps a phase's concurrency at what the machine can
+// actually hold.
+//
+// Every phase-3 worker holds one whole bucket plus an equal-sized sort
+// buffer, so peak memory is `workers * 2 * largest_bucket` — a quantity
+// hrafnar knows before the phase starts, since the scatter counted the
+// rows. Sizing the pool from the core count instead is how a 24-core box
+// with 32 GB and a busy bitcoind gets OOM-killed 40 minutes into a build.
+//
+// SAFETY covers what the two buffers do not: run-writer blocks, filters
+// and allocator retention. It is deliberately generous — a build that runs
+// slower than it could is a nuisance, one that dies at 90% is an hour lost
+// with nothing to show.
+//
+// Returns 0 when even a single worker will not fit, which the caller must
+// treat as "refuse now, with an explanation".
+// Exposed for tests: the arithmetic is the whole point of this, and it is
+// not otherwise reachable without running a multi-hour build.
+workers_for_memory_for_test :: proc(cfg: Config, want, per_worker_bytes: int, phase: string) -> int {
+	return workers_for_memory(cfg, want, per_worker_bytes, phase)
+}
+
+@(private = "file")
+workers_for_memory :: proc(
+cfg: Config,
+want: int,
+per_worker_bytes: int,
+phase: string,
+) -> int {
+SAFETY :: 2
+
+if per_worker_bytes <= 0 {
+	return want
+}
+need := per_worker_bytes * SAFETY
+
+budget_mb := int(cfg.memory_budget)
+source := "memory_budget"
+if budget_mb <= 0 {
+	avail := mem_available_mb()
+	if avail <= 0 {
+		// Unknown (not Linux): keep the old behaviour rather than
+		// guess a limit that might be far too low.
+		return want
+	}
+	// Leave a third for the page cache, the node, and everything else
+	// on the box. MemAvailable is what is free *now*; consuming all of
+	// it is how the OOM killer gets involved.
+	budget_mb = avail * 2 / 3
+	source = "available memory"
+}
+
+fits := (budget_mb * 1024 * 1024) / need
+if fits < 1 {
+	log.errorf(
+		"hugin: %s needs ~%d MB for even one worker but only %d MB is usable (%s); free memory, lower `bucket_bits` so buckets are smaller, or set `memory_budget` if you know better",
+		phase,
+		need / (1024 * 1024),
+		budget_mb,
+		source,
+	)
+	return 0
+}
+if fits >= want {
+	return want
+}
+log.infof(
+	"hugin: %s: %d workers, not %d — %d MB usable (%s), ~%d MB per worker",
+	phase,
+	fits,
+	want,
+	budget_mb,
+	source,
+	need / (1024 * 1024),
+)
+return fits
+}
+
+// scatter_largest_bucket_bytes is the biggest bucket the phase will load,
+// from the row counts the scatter already kept.
+@(private = "file")
+scatter_largest_bucket_bytes :: proc(sc: ^Scatter, row_size: int) -> int {
+most: u64
+for i in 0 ..< sc.n_buckets {
+	n := sync.atomic_load(&sc.rows[i])
+	if n > most {
+		most = n
+	}
+}
+return int(most) * row_size
+}
+
 build_index :: proc(cfg: Config, max_height: int = -1, allocator := context.allocator) -> (err: Error) {
 	cfg := config_fill_defaults(cfg)
 	start_time := time.now()
@@ -277,6 +369,7 @@ build_index :: proc(cfg: Config, max_height: int = -1, allocator := context.allo
 	) or_return
 
 	// --- worker pool ------------------------------------------------------
+	
 	// One pool PER PHASE: thread.pool_finish drains the queue and then
 	// permanently joins the worker threads, so a finished pool silently
 	// degrades every later phase to single-threaded execution on the
@@ -322,15 +415,24 @@ build_index :: proc(cfg: Config, max_height: int = -1, allocator := context.allo
 	)
 
 	// --- phase 2: join ----------------------------------------------------
+	// A phase-2 worker holds both join buckets plus an equal-sized sort
+	// buffer for each. Freed memory is not necessarily returned to the OS,
+	// so an over-wide phase 2 also raises the baseline phase 3 starts from.
+	p2_worker := 2 * scatter_largest_bucket_bytes(&b.sc_joinf, JOINF_ROW_SIZE) +
+		2 * scatter_largest_bucket_bytes(&b.sc_joins, JOINS_ROW_SIZE)
+	workers2 := workers_for_memory(cfg, workers, p2_worker, "phase 2")
+	if workers2 < 1 {
+		return Usage_Error.Bad_Config
+	}
 	log.infof(
 		"hugin: phase 2: joining %d buckets on %d workers (each: load, sort, derive history rows, ingest spends)",
 		b.n_buckets,
-		workers,
+		workers2,
 	)
 	build_status_set("phase 2: resolving spends")
 	phase2_start := time.now()
 	pool2: thread.Pool
-	thread.pool_init(&pool2, allocator, workers)
+	thread.pool_init(&pool2, allocator, workers2)
 	for t in pool2.threads {
 		t.init_context = context
 	}
@@ -362,11 +464,28 @@ build_index :: proc(cfg: Config, max_height: int = -1, allocator := context.allo
 	)
 
 	// --- phase 3: sort and ingest -----------------------------------------
-	log.infof("hugin: phase 3: sorting and ingesting %d history+txloc buckets", 2 * b.n_buckets)
+	// Each worker loads a whole bucket and allocates an equal-sized sort
+	// buffer, so this is the phase whose peak memory is both largest and
+	// exactly predictable.
+	p3_bucket := max(
+		scatter_largest_bucket_bytes(&b.sc_history, HISTORY_ROW_SIZE),
+		scatter_largest_bucket_bytes(&b.sc_txloc, TXLOC_ROW_SIZE),
+	)
+	workers3 := workers_for_memory(cfg, workers, p3_bucket * 2, "phase 3")
+	if workers3 < 1 {
+		return Usage_Error.Bad_Config
+	}
+	log.infof(
+		"hugin: phase 3: sorting and ingesting %d history+txloc buckets on %d workers (largest bucket %d MB, rss %d MB)",
+		2 * b.n_buckets,
+		workers3,
+		p3_bucket / (1024 * 1024),
+		proc_rss_mb(),
+	)
 	build_status_set("phase 3: sorting and ingesting the index")
 	phase3_start := time.now()
 	pool3: thread.Pool
-	thread.pool_init(&pool3, allocator, workers)
+	thread.pool_init(&pool3, allocator, workers3)
 	for t in pool3.threads {
 		t.init_context = context
 	}

@@ -460,3 +460,54 @@ test_build_status_roundtrip :: proc(t: ^testing.T) {
 	buf2: [160]byte
 	testing.expect_value(t, len(hugin.build_status_get(buf2[:])), 0)
 }
+
+// The build must size its thread pools from memory, not the core count.
+//
+// A phase-3 worker holds a whole bucket plus an equal-sized sort buffer, so
+// peak memory is workers x 2 x largest_bucket — known before the phase
+// starts, because the scatter counted the rows. Sizing from cores instead
+// is how a 24-core box with 32 GB and a busy bitcoind gets OOM-killed 40
+// minutes into a build, with nothing in hrafnar's own log to explain it.
+@(test)
+test_build_worker_count_respects_memory :: proc(t: ^testing.T) {
+	// per_worker_bytes is what one worker holds — the caller passes
+	// 2 x bucket for phase 3. The helper adds a safety factor of 2 on top
+	// for run-writer buffers and allocator retention, so a worker is
+	// budgeted at 2 x per_worker_bytes.
+	MB :: 1024 * 1024
+
+	// 4 GB budget, worker holds 400 MB (a 200 MB bucket, doubled) ->
+	// 800 MB budgeted each -> 5 fit, whatever the core count says.
+	cfg := hugin.Config {
+		memory_budget = 4096,
+	}
+	got := hugin.workers_for_memory_for_test(cfg, 64, 400 * MB, "phase 3")
+	testing.expectf(t, got == 5, "4 GB budget, 400 MB workers gave %d, want 5", got)
+
+	// Plenty of room: the caller's request is honoured, not inflated.
+	roomy := hugin.Config {
+		memory_budget = 64 * 1024,
+	}
+	testing.expect_value(t, hugin.workers_for_memory_for_test(roomy, 8, 16 * MB, "phase 3"), 8)
+
+	// Exactly one worker's worth: still runs, single-threaded.
+	tight := hugin.Config {
+		memory_budget = 1024,
+	}
+	testing.expect_value(t, hugin.workers_for_memory_for_test(tight, 32, 512 * MB, "phase 3"), 1)
+
+	// Not even one worker fits: 0 means "refuse", and the caller turns that
+	// into an error before doing 40 minutes of work.
+	{
+		ctx := context
+		ctx.logger = log.nil_logger() // it logs the reason at error level
+		context = ctx
+		impossible := hugin.Config {
+			memory_budget = 256,
+		}
+		testing.expect_value(t, hugin.workers_for_memory_for_test(impossible, 32, 4096 * MB, "phase 3"), 0)
+	}
+
+	// An unknown per-worker cost must not silently collapse to 1 worker.
+	testing.expect_value(t, hugin.workers_for_memory_for_test(cfg, 12, 0, "phase 3"), 12)
+}

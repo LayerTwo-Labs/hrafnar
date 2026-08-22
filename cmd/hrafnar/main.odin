@@ -20,7 +20,7 @@ import "core:time"
 
 import hugin "../../hugin"
 
-VERSION :: "0.22.1 (2026-08-21.2)"
+VERSION :: "0.23.0 (2026-08-22.1)"
 
 COMMANDS_USAGE :: `hrafnar — Bitcoin address indexer
 
@@ -58,6 +58,7 @@ Options :: struct {
 	horizon:     uint `usage:"reorg horizon in blocks (default 100)"`,
 	promote_batch: uint `usage:"blocks below the horizon before promoting (default 150)"`,
 	magic:       string `usage:"network magic override, 8 hex digits (e.g. eca5a104)"`,
+	memory_budget: uint `usage:"MB the build may use (default: 2/3 of available memory)"`,
 	max_height:  int `args:"name=max-height" usage:"index only up to this height (index only)"`,
 	poll:        uint `usage:"daemon: catch-up interval in seconds (default 30)"`,
 	foreground:  bool `usage:"daemon: stay attached to the terminal (default: detach into the background)"`,
@@ -130,6 +131,7 @@ main :: proc() {
 		if fc.horizon >= 0 {opt.horizon = uint(fc.horizon)}
 		if fc.promote_batch >= 0 {opt.promote_batch = uint(fc.promote_batch)}
 		if fc.magic != "" && opt.magic == "" {opt.magic = fc.magic}
+		if fc.memory_budget >= 0 {opt.memory_budget = uint(fc.memory_budget)}
 		if fc.rpc_url != "" {file_rpc_url = strings.clone(fc.rpc_url)}
 		if fc.rpc_cookie != "" {file_rpc_cookie = strings.clone(fc.rpc_cookie)}
 		if fc.rpc_user != "" {file_rpc_user = strings.clone(fc.rpc_user)}
@@ -188,6 +190,7 @@ main :: proc() {
 		horizon     = u32(opt.horizon),
 		promote_batch = u32(opt.promote_batch),
 		magic       = cfg_magic,
+		memory_budget = u32(opt.memory_budget),
 		workers     = opt.workers,
 	}
 	cfg.rpc_url = file_rpc_url

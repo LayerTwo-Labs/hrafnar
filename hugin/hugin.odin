@@ -141,6 +141,12 @@ Config :: struct {
 	magic:       [4]u8,
 	bucket_bits: u32, // default 12
 	horizon:     u32, // reorg horizon in blocks, default 100
+	// Memory the BUILD may use, in MB. Zero means "work it out": two
+	// thirds of MemAvailable (or the cgroup ceiling). The build sizes its
+	// thread pools from this rather than from the core count, because
+	// peak memory is workers x bucket size, and a box with a large
+	// bitcoind on it has far less headroom than its core count suggests.
+	memory_budget: u32,
 	promote_batch: u32, // min blocks below the horizon before promoting, default 24
 	workers:     int, // 0 = core count
 	// Mempool tracking talks to bitcoind's JSON-RPC (the on-chain index

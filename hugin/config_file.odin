@@ -54,6 +54,7 @@ File_Config :: struct {
 	horizon:     int,
 	magic:       string,
 	promote_batch: int,
+	memory_budget: int,
 	allocator:   runtime.Allocator,
 }
 
@@ -102,6 +103,7 @@ config_file_load :: proc(
 	fc.bucket_bits = -1
 	fc.horizon = -1
 	fc.promote_batch = -1
+	fc.memory_budget = -1
 	fc.mempool = -1
 	fc.electrum = -1
 	fc.electrum_max_history = -1
@@ -238,6 +240,8 @@ config_file_load :: proc(
 			fc.horizon = parse_config_uint(value) or_return
 		case "promote_batch":
 			fc.promote_batch = parse_config_uint(value) or_return
+		case "memory_budget", "memory-budget":
+			fc.memory_budget = parse_config_uint(value) or_return
 		case:
 			return fc, Usage_Error.Bad_Config
 		}

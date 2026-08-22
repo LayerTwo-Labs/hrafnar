@@ -118,6 +118,56 @@ daemon_request_stop :: proc() {
 // proc_rss_mb reports this process's resident memory. The OOM killer
 // leaves nothing in our own logs — SIGKILL cannot be caught — so the only
 // way memory growth becomes visible is to print it as we go.
+// mem_available_mb reports memory this process can actually expect to get:
+// MemAvailable (which counts reclaimable page cache, unlike MemFree), and
+// any cgroup v2 ceiling, whichever is lower. Zero means "unknown" — the
+// caller must not treat that as "no memory".
+//
+// This exists because the build cannot size itself sensibly from the core
+// count alone. A 24-core box with 32 GB and a large bitcoind running is a
+// very different budget from the same box idle, and the difference is the
+// gap between finishing and being OOM-killed 40 minutes in.
+mem_available_mb :: proc() -> int {
+	when ODIN_OS == .Linux {
+		avail := 0
+		if data, err := os.read_entire_file("/proc/meminfo", context.temp_allocator); err == nil {
+			for line in strings.split_lines_iterator(&(string(data))) {
+				if !strings.has_prefix(line, "MemAvailable:") {
+					continue
+				}
+				fields := strings.fields(line, context.temp_allocator)
+				if len(fields) >= 2 {
+					if kb, ok := strconv.parse_int(fields[1], 10); ok {
+						avail = kb / 1024
+					}
+				}
+				break
+			}
+		}
+		// cgroup v2: a container ceiling is invisible in /proc/meminfo, and
+		// exceeding it is killed exactly like a host OOM.
+		if lim, lerr := os.read_entire_file("/sys/fs/cgroup/memory.max", context.temp_allocator); lerr == nil {
+			txt := strings.trim_space(string(lim))
+			if txt != "max" {
+				if limit, ok := strconv.parse_int(txt, 10); ok {
+					used := 0
+					if cur, cerr := os.read_entire_file("/sys/fs/cgroup/memory.current", context.temp_allocator);
+					   cerr == nil {
+						used, _ = strconv.parse_int(strings.trim_space(string(cur)), 10)
+					}
+					headroom := (limit - used) / (1024 * 1024)
+					if headroom >= 0 && (avail == 0 || headroom < avail) {
+						avail = headroom
+					}
+				}
+			}
+		}
+		return avail
+	} else {
+		return 0 // unknown: callers fall back to the core count
+	}
+}
+
 proc_rss_mb :: proc() -> int {
 	when ODIN_OS == .Linux {
 		data, err := os.read_entire_file("/proc/self/statm", context.temp_allocator)
