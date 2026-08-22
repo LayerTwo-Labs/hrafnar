@@ -252,6 +252,7 @@ build_index :: proc(cfg: Config, max_height: int = -1, allocator := context.allo
 	if cfg.compact {
 		final_gb = gb * 3 / 10
 	}
+	raise_open_file_limit()
 	log.infof(
 		"hugin: mapped %d blk files (%d GB); expect up to ~%d GB of work-dir scratch at peak and ~%d GB of final index%s",
 		len(b.files),

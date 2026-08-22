@@ -231,6 +231,9 @@ User=you
 ExecStart=/usr/local/bin/hrafnar daemon --foreground --config /etc/hrafnar.config
 Restart=on-failure
 RestartSec=30
+# One descriptor per open run file, and an index has at least one run per
+# bucket (4096 by default, x3 keyspaces). The usual 1024 is far too low.
+LimitNOFILE=1048576
 # The initial bulk build runs inside the service on first start; watch it
 # with: journalctl -u hrafnar -f   (or tail the hrafnar.log in the index dir)
 
@@ -335,6 +338,26 @@ Unlike the Electrum server, the esplora API is **off by default** — turn it on
 want it.
 
 ## When something goes wrong
+
+**`EMFILE`, or "mempool sync failing (is bitcoind's RPC reachable?)" that starts only
+after a while.** Too many open files. Munin keeps one descriptor per open run file, and
+an index has at least one run per bucket — 12,288 at the defaults, before sockets and
+blk files. Against a soft limit of 1024, catch-up exhausts descriptors, the index cannot
+be reopened, and even the bitcoind RPC socket fails to open, which is why it can look
+like a credentials problem. hrafnar raises its own soft limit to the hard limit at
+startup and warns when what it ends up with is still low, but the hard limit is yours to
+set:
+
+```sh
+ulimit -n 1048576                      # this shell
+# systemd: LimitNOFILE=1048576 in the unit (see above)
+# permanent: /etc/security/limits.conf
+#   youruser soft nofile 1048576
+#   youruser hard nofile 1048576
+```
+
+A cookie or credentials problem fails from the *first* RPC call. If the mempool synced
+successfully and only then began failing, it is descriptors, not auth.
 
 **Balances or histories look too low, or the tip is behind the network.** Almost always
 this means hrafnar was pointed at a node that was not fully synced — it indexes the

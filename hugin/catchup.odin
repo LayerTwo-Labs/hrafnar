@@ -91,6 +91,7 @@ catchup_run :: proc(
 ) {
 	format_check(cfg) or_return
 	cfg := config_fill_defaults(cfg)
+	raise_open_file_limit()
 
 	// --- open everything --------------------------------------------------
 	// Files are mapped lazily at their use sites; a steady-state cycle

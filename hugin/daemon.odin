@@ -118,6 +118,37 @@ daemon_request_stop :: proc() {
 // proc_rss_mb reports this process's resident memory. The OOM killer
 // leaves nothing in our own logs — SIGKILL cannot be caught — so the only
 // way memory growth becomes visible is to print it as we go.
+// raise_open_file_limit lifts this process's file-descriptor soft limit to
+// its hard limit, the way bitcoind does at startup.
+//
+// Munin keeps one descriptor per OPEN run file, and an index has one run
+// per bucket at minimum — 12,288 of them at the default bucket_bits, before
+// counting sockets and blk files. Against a typical soft limit of 1024,
+// catch-up exhausts descriptors and every subsequent open fails with
+// EMFILE: the index cannot be reopened, and the bitcoind RPC socket cannot
+// be created either, which surfaces misleadingly as "mempool sync failing
+// (is bitcoind's RPC reachable?)".
+//
+// Returns the limit in force afterwards, or 0 if it could not be read.
+raise_open_file_limit :: proc() -> u64 {
+	when ODIN_OS == .Linux || ODIN_OS == .Darwin {
+		lim: posix.rlimit
+		if posix.getrlimit(.NOFILE, &lim) != .OK {
+			return 0
+		}
+		if lim.rlim_cur < lim.rlim_max {
+			want := lim
+			want.rlim_cur = lim.rlim_max
+			if posix.setrlimit(.NOFILE, &want) == .OK {
+				return u64(want.rlim_cur)
+			}
+		}
+		return u64(lim.rlim_cur)
+	} else {
+		return 0
+	}
+}
+
 // mem_available_mb reports memory this process can actually expect to get:
 // MemAvailable (which counts reclaimable page cache, unlike MemFree), and
 // any cgroup v2 ceiling, whichever is lower. Zero means "unknown" — the
@@ -317,6 +348,16 @@ daemon_run :: proc(
 
 	// First log line within milliseconds of start: the operator must never
 	// wonder whether the process is alive.
+	// Before anything opens a file. An index has at least one run per
+	// bucket, so the default soft limit of 1024 is exhausted almost
+	// immediately on a full chain.
+	if nofile := raise_open_file_limit(); nofile > 0 && nofile < 65536 {
+		log.warnf(
+			"hrafnar: open-file limit is %d, which is low for an index with %d buckets — expect EMFILE. Raise it with `ulimit -n 1048576`, LimitNOFILE=1048576 under systemd, or /etc/security/limits.conf",
+			nofile,
+			1 << cfg.bucket_bits,
+		)
+	}
 	log.infof(
 		"hrafnar: daemon starting (pid %d): index %s, datadir %s",
 		posix.getpid(),
