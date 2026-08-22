@@ -470,52 +470,59 @@ test_build_status_roundtrip :: proc(t: ^testing.T) {
 // minutes into a build, with nothing in hrafnar's own log to explain it.
 @(test)
 test_build_worker_count_respects_memory :: proc(t: ^testing.T) {
-	// per_worker_bytes is what one worker holds — the caller passes
-	// 2 x bucket for phase 3. The helper adds a safety factor of 2 on top
-	// for run-writer buffers and allocator retention, so a worker is
-	// budgeted at 2 x per_worker_bytes.
 	MB :: 1024 * 1024
 
-	// 4 GB budget, worker holds 400 MB (a 200 MB bucket, doubled) ->
-	// 800 MB budgeted each -> 5 fit, whatever the core count says.
-	cfg := hugin.Config {
-		memory_budget = 4096,
+	// The model: one worker draws the largest bucket, the rest draw the
+	// mean, each doubled for its sort buffer, with a 1.25x margin.
+	//   peak = 2*largest + (workers-1) * 2*mean
+	//
+	// The numbers below are the real ones measured on a full chain: a
+	// 3765 MB history bucket (74.5M rows from a single scripthash) against
+	// a ~95 MB mean. Charging every worker the maximum — which is what the
+	// first version did — made this look like it needed 15 GB per worker
+	// and refused the build.
+	LARGEST :: 3765 * MB
+	MEAN :: 95 * MB
+
+	// 32 GB budget: 2*3765*1.25 = 9412 MB for the big one, leaving
+	// ~23 GB at 237 MB each.
+	big := hugin.Config {
+		memory_budget = 32768,
 	}
-	got := hugin.workers_for_memory_for_test(cfg, 64, 400 * MB, "phase 3")
-	testing.expectf(t, got == 5, "4 GB budget, 400 MB workers gave %d, want 5", got)
+	got := hugin.workers_for_memory_for_test(big, 64, LARGEST, MEAN, "phase 3")
+	testing.expectf(t, got > 60 && got <= 64, "32 GB with a 3765 MB outlier gave %d workers, want most of 64", got)
+
+	// The old model charged every worker 2*LARGEST*safety ~ 9.4 GB, so it
+	// would have allowed 3 here. Anything that low means the skew is being
+	// applied to every worker again.
+	testing.expectf(t, got > 10, "%d workers suggests the largest bucket is being charged to every worker", got)
+
+	// Tight budget: the outlier alone dominates, so few workers fit.
+	tight := hugin.Config {
+		memory_budget = 12000,
+	}
+	few := hugin.workers_for_memory_for_test(tight, 64, LARGEST, MEAN, "phase 3")
+	testing.expectf(t, few >= 1 && few < 20, "12 GB with a 3765 MB outlier gave %d workers", few)
+
+	// Not even the largest bucket fits: clamp to one and warn. Never 0 —
+	// a thread pool of zero workers is not a safe outcome, and v0.23.2
+	// shipped exactly that.
+	{
+		ctx := context
+		ctx.logger = log.nil_logger()
+		context = ctx
+		impossible := hugin.Config {
+			memory_budget = 256,
+		}
+		testing.expect_value(t, hugin.workers_for_memory_for_test(impossible, 32, LARGEST, MEAN, "phase 3"), 1)
+	}
 
 	// Plenty of room: the caller's request is honoured, not inflated.
 	roomy := hugin.Config {
 		memory_budget = 64 * 1024,
 	}
-	testing.expect_value(t, hugin.workers_for_memory_for_test(roomy, 8, 16 * MB, "phase 3"), 8)
+	testing.expect_value(t, hugin.workers_for_memory_for_test(roomy, 8, 16 * MB, 16 * MB, "phase 3"), 8)
 
-	// Exactly one worker's worth: still runs, single-threaded.
-	tight := hugin.Config {
-		memory_budget = 1024,
-	}
-	testing.expect_value(t, hugin.workers_for_memory_for_test(tight, 32, 512 * MB, "phase 3"), 1)
-
-	// Not even one worker fits by the estimate: clamp to 1 and warn, never
-	// abort. The first version returned 0 and the caller turned that into
-	// an error — which refused a build that had previously completed phase
-	// after phase, because the estimate for ONE worker came out roughly
-	// equal to the whole build's measured peak. An estimate this coarse
-	// must not be able to stop a build.
-	{
-		ctx := context
-		ctx.logger = log.nil_logger() // it warns with the reason
-		context = ctx
-		impossible := hugin.Config {
-			memory_budget = 256,
-		}
-		testing.expectf(
-			t,
-			hugin.workers_for_memory_for_test(impossible, 32, 4096 * MB, "phase 3") == 1,
-			"an over-large estimate must clamp to one worker, not abort the build",
-		)
-	}
-
-	// An unknown per-worker cost must not silently collapse to 1 worker.
-	testing.expect_value(t, hugin.workers_for_memory_for_test(cfg, 12, 0, "phase 3"), 12)
+	// Unknown sizes must not collapse the pool.
+	testing.expect_value(t, hugin.workers_for_memory_for_test(big, 12, 0, 0, "phase 3"), 12)
 }

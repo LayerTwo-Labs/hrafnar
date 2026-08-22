@@ -108,87 +108,95 @@ build_set_err :: proc(b: ^Build, err: Error) {
 // workers_for_memory caps a phase's concurrency at what the machine can
 // actually hold.
 //
-// Every phase-3 worker holds one whole bucket plus an equal-sized sort
-// buffer, so peak memory is `workers * 2 * largest_bucket` — a quantity
-// hrafnar knows before the phase starts, since the scatter counted the
-// rows. Sizing the pool from the core count instead is how a 24-core box
-// with 32 GB and a busy bitcoind gets OOM-killed 40 minutes into a build.
+// Peak is NOT `workers * 2 * largest_bucket`. Exactly one worker ever holds
+// the largest bucket; the rest hold typical ones. Measured on a real chain:
+// the biggest history bucket was 3765 MB (74.5M rows) against a ~95 MB
+// mean — one scripthash with tens of millions of entries, which always
+// lands in a single bucket because a hash prefix cannot be split, and which
+// no bucket_bits setting will divide. Charging every worker the maximum
+// overestimated by exactly that 41x skew and refused a build that had
+// already run.
 //
-// SAFETY covers what the two buffers do not: run-writer blocks, filters
-// and allocator retention. It is deliberately generous — a build that runs
-// slower than it could is a nuisance, one that dies at 90% is an hour lost
-// with nothing to show.
+//     peak = 2*largest + (workers-1) * 2*mean
 //
-// Never returns 0. An estimate this coarse must not be able to abort a
-// build: the first version did, and refused a build that had previously
-// run to 15.8 GB peak with many workers — the estimate for ONE worker came
-// out at 15 GB, wrong by roughly the worker count, and it only discovered
-// this after 30 minutes of phase 2. Clamping to a single worker is the
-// minimum-memory configuration and is strictly better than giving up.
-// Exposed for tests: the arithmetic is the whole point of this, and it is
-// not otherwise reachable without running a multi-hour build.
-workers_for_memory_for_test :: proc(cfg: Config, want, per_worker_bytes: int, phase: string) -> int {
-	return workers_for_memory(cfg, want, per_worker_bytes, phase)
-}
-
+// The margin is small because the raw formula is accurate: phase 2 measured
+// 13449 MB against 238 MB per worker across ~56 workers, within 1%. It
+// covers run-writer buffers, not a modelling gap.
+//
+// Never returns 0 — a thread pool of zero workers is not a safe outcome,
+// and an estimate must not be able to stop a build. Single-threaded is the
+// minimum-memory configuration and is strictly better than failing.
 @(private = "file")
 workers_for_memory :: proc(
-cfg: Config,
-want: int,
-per_worker_bytes: int,
-phase: string,
+	cfg: Config,
+	want: int,
+	largest_bytes: int,
+	mean_bytes: int,
+	phase: string,
 ) -> int {
-SAFETY :: 2
+	if largest_bytes <= 0 || mean_bytes <= 0 || want <= 1 {
+		return max(want, 1)
+	}
 
-if per_worker_bytes <= 0 {
-	return want
-}
-need := per_worker_bytes * SAFETY
+	budget_mb := int(cfg.memory_budget)
+	source := "memory_budget"
+	if budget_mb <= 0 {
+		avail := mem_available_mb()
+		if avail <= 0 {
+			return want // unknown (not Linux): keep the core count
+		}
+		// Leave a third for the page cache, the node, and everything else.
+		// MemAvailable is what is free *now*; consuming all of it is how
+		// the OOM killer gets involved.
+		budget_mb = avail * 2 / 3
+		source = "available memory"
+	}
+	budget := budget_mb * 1024 * 1024
 
-budget_mb := int(cfg.memory_budget)
-source := "memory_budget"
-if budget_mb <= 0 {
-	avail := mem_available_mb()
-	if avail <= 0 {
-		// Unknown (not Linux): keep the old behaviour rather than
-		// guess a limit that might be far too low.
+	big := (2 * largest_bytes) * 5 / 4 // the one worker that draws it
+	per := (2 * mean_bytes) * 5 / 4 // each of the others
+
+	if budget <= big {
+		log.warnf(
+			"hugin: %s: the largest bucket alone needs ~%d MB and only %d MB is usable (%s) — running single-threaded. If it is OOM-killed, lower bitcoind's dbcache, free memory, or raise `memory_budget`",
+			phase,
+			big / (1024 * 1024),
+			budget_mb,
+			source,
+		)
+		return 1
+	}
+
+	fits := 1 + (budget - big) / per
+	if fits >= want {
 		return want
 	}
-	// Leave a third for the page cache, the node, and everything else
-	// on the box. MemAvailable is what is free *now*; consuming all of
-	// it is how the OOM killer gets involved.
-	budget_mb = avail * 2 / 3
-	source = "available memory"
-}
-
-fits := (budget_mb * 1024 * 1024) / need
-if fits < 1 {
-	log.errorf(
-		"hugin: %s needs ~%d MB for even one worker but only %d MB is usable (%s); free memory, lower `bucket_bits` so buckets are smaller, or set `memory_budget` if you know better",
+	if fits < 1 {
+		fits = 1
+	}
+	log.infof(
+		"hugin: %s: %d workers, not %d — %d MB usable (%s), largest bucket ~%d MB, typical ~%d MB",
 		phase,
-		need / (1024 * 1024),
+		fits,
+		want,
 		budget_mb,
 		source,
+		big / (1024 * 1024),
+		per / (1024 * 1024),
 	)
-	return 0
-}
-if fits >= want {
-	return want
-}
-log.infof(
-	"hugin: %s: %d workers, not %d — %d MB usable (%s), ~%d MB per worker",
-	phase,
-	fits,
-	want,
-	budget_mb,
-	source,
-	need / (1024 * 1024),
-)
-return fits
+	return fits
 }
 
-// scatter_largest_bucket_bytes is the biggest bucket the phase will load,
-// from the row counts the scatter already kept.
+// Exposed for tests: this arithmetic is the whole point, and it is not
+// otherwise reachable without running a multi-hour build.
+workers_for_memory_for_test :: proc(
+	cfg: Config,
+	want, largest_bytes, mean_bytes: int,
+	phase: string,
+) -> int {
+	return workers_for_memory(cfg, want, largest_bytes, mean_bytes, phase)
+}
+
 @(private = "file")
 scatter_largest_bucket_rows :: proc(sc: ^Scatter) -> u64 {
 	most: u64
@@ -201,16 +209,25 @@ scatter_largest_bucket_rows :: proc(sc: ^Scatter) -> u64 {
 	return most
 }
 
+// The biggest bucket a phase will load, from the row counts the scatter
+// already kept.
 @(private = "file")
 scatter_largest_bucket_bytes :: proc(sc: ^Scatter, row_size: int) -> int {
-most: u64
-for i in 0 ..< sc.n_buckets {
-	n := sync.atomic_load(&sc.rows[i])
-	if n > most {
-		most = n
-	}
+	return int(scatter_largest_bucket_rows(sc)) * row_size
 }
-return int(most) * row_size
+
+// What a typical worker holds. The pathological bucket barely moves this:
+// one 74.5M-row bucket adds ~18k rows to a 1.8M-row mean.
+@(private = "file")
+scatter_mean_bucket_bytes :: proc(sc: ^Scatter, row_size: int) -> int {
+	if sc.n_buckets == 0 {
+		return 0
+	}
+	total: u64
+	for i in 0 ..< sc.n_buckets {
+		total += sync.atomic_load(&sc.rows[i])
+	}
+	return int(total / u64(sc.n_buckets)) * row_size
 }
 
 build_index :: proc(cfg: Config, max_height: int = -1, allocator := context.allocator) -> (err: Error) {
@@ -437,7 +454,9 @@ build_index :: proc(cfg: Config, max_height: int = -1, allocator := context.allo
 	// so an over-wide phase 2 also raises the baseline phase 3 starts from.
 	p2_joinf := scatter_largest_bucket_bytes(&b.sc_joinf, JOINF_ROW_SIZE)
 	p2_joins := scatter_largest_bucket_bytes(&b.sc_joins, JOINS_ROW_SIZE)
-	p2_worker := 2 * p2_joinf + 2 * p2_joins
+	p2_max := p2_joinf + p2_joins
+	p2_mean := scatter_mean_bucket_bytes(&b.sc_joinf, JOINF_ROW_SIZE) +
+		scatter_mean_bucket_bytes(&b.sc_joins, JOINS_ROW_SIZE)
 	// Printed so the estimate can be checked against actual RSS. The
 	// arithmetic behind these caps is not yet validated on a real chain.
 	log.infof(
@@ -446,7 +465,7 @@ build_index :: proc(cfg: Config, max_height: int = -1, allocator := context.allo
 		p2_joins / (1024 * 1024),
 		proc_rss_mb(),
 	)
-	workers2 := workers_for_memory(cfg, workers, p2_worker, "phase 2")
+	workers2 := workers_for_memory(cfg, workers, p2_max, p2_mean, "phase 2")
 	log.infof(
 		"hugin: phase 2: joining %d buckets on %d workers (each: load, sort, derive history rows, ingest spends)",
 		b.n_buckets,
@@ -500,7 +519,11 @@ build_index :: proc(cfg: Config, max_height: int = -1, allocator := context.allo
 		p3_txloc / (1024 * 1024),
 		scatter_largest_bucket_rows(&b.sc_txloc),
 	)
-	workers3 := workers_for_memory(cfg, workers, p3_bucket * 2, "phase 3")
+	p3_mean := max(
+		scatter_mean_bucket_bytes(&b.sc_history, HISTORY_ROW_SIZE),
+		scatter_mean_bucket_bytes(&b.sc_txloc, TXLOC_ROW_SIZE),
+	)
+	workers3 := workers_for_memory(cfg, workers, p3_bucket, p3_mean, "phase 3")
 	log.infof(
 		"hugin: phase 3: sorting and ingesting %d history+txloc buckets on %d workers (largest bucket %d MB, rss %d MB)",
 		2 * b.n_buckets,
