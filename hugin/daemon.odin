@@ -131,7 +131,10 @@ mem_available_mb :: proc() -> int {
 	when ODIN_OS == .Linux {
 		avail := 0
 		if data, err := os.read_entire_file("/proc/meminfo", context.temp_allocator); err == nil {
-			for line in strings.split_lines_iterator(&(string(data))) {
+			// split_lines_iterator takes a pointer, so the string needs a
+			// name — `&string(data)` is not addressable.
+			text := string(data)
+			for line in strings.split_lines_iterator(&text) {
 				if !strings.has_prefix(line, "MemAvailable:") {
 					continue
 				}
