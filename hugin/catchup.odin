@@ -23,6 +23,14 @@ import munin "../munin"
 // Buckets holding more runs than this after promotion get compacted.
 COMPACT_RUN_THRESHOLD :: 4
 
+// How long a compaction sweep may run before yielding back. After a cycle
+// that indexed blocks the budget is short, because the caller does not
+// publish the new tip until catchup_run returns; on an idle cycle it can
+// take longer. Neither may be zero: compaction that never runs lets run
+// files accumulate without bound, which makes every index reopen slower.
+COMPACT_BUDGET_BUSY_S :: 2.0
+COMPACT_BUDGET_IDLE_S :: 30.0
+
 // One block's rows scatter across nearly every bucket, so each promotion
 // writes ~one run file per touched bucket per keyspace regardless of how
 // many blocks it carries. Promoting block-by-block would create thousands
@@ -427,15 +435,24 @@ catchup_run :: proc(
 	}
 
 	// --- compaction -------------------------------------------------------
-	// Only on cycles that indexed nothing. The caller does not publish this
-	// cycle's results until catchup_run RETURNS, so sweeping after indexing
-	// a block would hold that block back for the length of the sweep — the
-	// very staleness the yield check exists to prevent. Idle cycles are
-	// where the spare time is anyway, and the sweep yields the moment a
-	// block shows up.
-	if indexed == 0 {
-		compact_sweep(cfg, db_history, db_txloc, db_spends, cancel, yield) or_return
+	// Runs on EVERY cycle, time-boxed.
+	//
+	// This used to be gated on `indexed == 0` — only idle cycles — to stop a
+	// sweep delaying publication of a block. That silently assumed idle
+	// cycles exist. When ecash alphanet forked and started producing ~2.4
+	// blocks/second, every cycle indexed something, so compaction never ran
+	// at all: 12,170 run files accumulated in one keyspace, and since
+	// index_open parses every manifest on every refresh, each of ~25,000
+	// daily reopens got steadily more expensive.
+	//
+	// A short budget after indexing keeps publication prompt while still
+	// making progress; idle cycles get a longer one. Debt is never allowed
+	// to grow without bound just because blocks are arriving.
+	sweep_budget := COMPACT_BUDGET_IDLE_S
+	if indexed > 0 {
+		sweep_budget = COMPACT_BUDGET_BUSY_S
 	}
+	compact_sweep(cfg, db_history, db_txloc, db_spends, cancel, yield, sweep_budget) or_return
 	return nil
 }
 
@@ -947,6 +964,7 @@ compact_sweep :: proc(
 	db_spends: ^munin.Db,
 	cancel: ^bool,
 	yield: ^Yield_Check,
+	budget_s: f64, // stop after this long, even with debt left
 ) -> (
 	err: Error,
 ) {
@@ -998,6 +1016,9 @@ compact_sweep :: proc(
 				munin.db_compact_bucket(db, u32(bucket)) or_return
 				// Stat-based; runs in the scratch so it cannot accumulate.
 				paused = should_yield(yield)
+			}
+			if !paused && budget_s > 0 && time.duration_seconds(time.since(compact_start)) >= budget_s {
+				paused = true
 			}
 			free_all(cscratch_alloc)
 			done += 1
@@ -1258,9 +1279,21 @@ catchup_runner_main :: proc(t: ^thread.Thread) {
 					index_adopt_txid_cache(new_idx, cur)
 					index_release(cur)
 				}
+				tip := index_tip_height(new_idx)
+				runs := munin.db_run_count(new_idx.db_history)
 				index_slot_swap(r.slot, new_idx)
 				refreshed = true
-				log.infof("hrafnar: index refreshed, tip %d", index_tip_height(new_idx))
+				// RSS and run count on every refresh. index_open rebuilds
+				// the whole index — manifest, header chain, blk file list —
+				// so both numbers drive its cost, and four unexplained
+				// deaths produced no evidence of either. Read them here,
+				// before the swap hands ownership away.
+				log.infof(
+					"hrafnar: index refreshed, tip %d (%d history runs, rss %d MB)",
+					tip,
+					runs,
+					proc_rss_mb(),
+				)
 			} else {
 				log.errorf("hrafnar: cannot reopen the index after catch-up: %v", oerr)
 			}

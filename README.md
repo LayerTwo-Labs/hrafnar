@@ -339,6 +339,14 @@ want it.
 
 ## When something goes wrong
 
+**Memory climbing over days, or the daemon dying with no error at all.** Check the run
+count in the refresh line — `index refreshed, tip N (M history runs, rss X MB)`. Every
+index reopen parses the whole manifest and allocates a record per run, so a run count in
+the tens of thousands makes each reopen progressively more expensive. Runs accumulate
+when compaction cannot keep up; the sweep is time-boxed and runs every cycle, so this
+should stay bounded. If it does not, `hrafnar catchup` from cron with the daemon stopped
+lets a sweep run uninterrupted.
+
 **`EMFILE`, or "mempool sync failing (is bitcoind's RPC reachable?)" that starts only
 after a while.** Too many open files. Munin keeps one descriptor per open run file, and
 an index has at least one run per bucket — 12,288 at the defaults, before sockets and

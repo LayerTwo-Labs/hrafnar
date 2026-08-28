@@ -10,6 +10,16 @@ package munin
 import "core:log"
 import "core:sync"
 
+// db_run_count reports how many runs the database holds in total. Every
+// one of them costs a Run struct and a parsed manifest record each time
+// the database is opened, so this is the number that makes reopening
+// progressively more expensive when compaction falls behind.
+db_run_count :: proc(db: ^Db) -> int {
+	sync.mutex_lock(&db.mu)
+	defer sync.mutex_unlock(&db.mu)
+	return len(db.manifest.runs)
+}
+
 // db_bucket_run_count reports how many runs a bucket currently holds,
 // the signal callers use to decide when compaction pays.
 db_bucket_run_count :: proc(db: ^Db, bucket: u32) -> int {

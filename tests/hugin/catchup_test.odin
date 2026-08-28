@@ -890,9 +890,20 @@ test_compaction_sweep_yields_safely_and_progresses :: proc(t: ^testing.T) {
 	testing.expect_value(t, hugin.build_index(w.cfg), nil)
 	testing.expect_value(t, hugin.catchup_run(w.cfg), nil)
 
-	// Blocks build compaction debt: each cycle promotes, adding a run to
-	// every bucket, and a cycle that indexed a block deliberately does NOT
-	// sweep (it must return so the daemon can publish the new block).
+	// Compaction must run on cycles that INDEX BLOCKS, not only on idle
+	// ones. Gating it on idle cycles meant that on a chain producing blocks
+	// faster than the poll interval it never ran at all, and run files grew
+	// without bound — which makes every index reopen more expensive, since
+	// index_open parses the whole manifest.
+	//
+	// The yield fires after every bucket, so each cycle compacts at most one
+	// while promotions keep adding runs. If compaction were still gated on
+	// idle cycles, `yields` would stay at zero here.
+	yields := 0
+	y := hugin.Yield_Check {
+		fn   = always_yield,
+		user = &yields,
+	}
 	CYCLES :: 9
 	for i in 0 ..< CYCLES {
 		cb, _ := bb_tx(nil, outs[:], u32(300 + i))
@@ -901,8 +912,13 @@ test_compaction_sweep_yields_safely_and_progresses :: proc(t: ^testing.T) {
 		append(&w.blocks, blk)
 		prev = h
 		world_flush(t, &w)
-		testing.expect_value(t, hugin.catchup_run(w.cfg), nil)
+		testing.expect_value(t, hugin.catchup_run(w.cfg, nil, nil, &y), nil)
 	}
+	testing.expect(
+		t,
+		yields > 0,
+		"compaction never ran on a cycle that indexed blocks — it is gated on idle cycles again, which lets run files grow without bound on a fast chain",
+	)
 
 	total_blocks := 1 + CYCLES
 	want := i64(u64(total_blocks) * 2 * COIN)
@@ -950,22 +966,14 @@ test_compaction_sweep_yields_safely_and_progresses :: proc(t: ^testing.T) {
 		)
 	}
 
-	// Idle cycles are where the debt gets worked off. Yield after EVERY
-	// bucket — the most hostile interleaving there is, one bucket of
-	// forward progress per pass, every interruption landing between
-	// committed buckets.
-	yields := 0
-	y := hugin.Yield_Check {
-		fn   = always_yield,
-		user = &yields,
-	}
+	// Keep going with the same hostile interleaving — one bucket of forward
+	// progress per pass, every interruption landing between committed
+	// buckets.
 	for _ in 0 ..< 20 {
 		testing.expect_value(t, hugin.catchup_run(w.cfg, nil, nil, &y), nil)
 		// Every row must remain readable after every interruption.
 		expect_balance(t, w.cfg, shs[0], want)
 	}
-	testing.expect(t, yields > 0, "the sweep never consulted the yield check")
-
 	// Now let it drain with no block pressure, checking after every pass
 	// that the data is still complete — an interrupted sweep must never
 	// leave a bucket half-merged or a row unreachable.
