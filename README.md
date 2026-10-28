@@ -516,24 +516,26 @@ noticeably slower. The default exact index is the right choice unless disk is ti
 **One-shot commands:** `hrafnar index` runs just the bulk build (no serving);
 `hrafnar catchup` runs one catch-up cycle — useful from cron instead of a daemon.
 
-## Running against ecash / drynet4
+## Running against eCash
 
 [`ecash-com/bitcoin`](https://github.com/ecash-com/bitcoin) is a Bitcoin Core fork
-(the ECX full node) running the `drynet4` network. It keeps Bitcoin's address formats
-and script rules, so hrafnar indexes it with no special handling — but **every port is
-shifted +200 from Bitcoin's** (RPC 8532, P2P 8533) and the network magic differs, so
-`network` has to be set.
+(the ECX full node). eCash shares Bitcoin's chain up to height **973,728** and forks
+there. It keeps Bitcoin's address formats and script rules, so hrafnar indexes it with
+no special handling — but the node writes its own network magic (`eca5dcb7`) and
+**every port is shifted +200 from Bitcoin's** (RPC 8532, P2P 8533), so `network` has
+to be set. The node's data directory is `~/.ecash` (`~/Library/Application
+Support/eCash` on macOS) and its config file is `ecash.conf`.
 
 ```ini
 [hugin]
-datadir  = /home/you/.drynet4/blocks     ; the node's blocks/ directory
-index    = /home/you/.hrafnar/drynet4
-network  = ecash                         ; magic ec a5 d4 04, ECX units
+datadir  = /home/you/.ecash/blocks       ; the node's blocks/ directory
+index    = /home/you/.hrafnar/ecash
+network  = ecash                         ; magic ec a5 dc b7, ECX units
 
 ; Mempool: the RPC port defaults to 8532 for this network, and the auth cookie is
 ; found automatically at <datadir>/../.cookie — so neither usually needs setting.
 ;rpc        = 127.0.0.1:8532
-;rpc_cookie = /home/you/.drynet4/.cookie ; the .cookie FILE, not its directory
+;rpc_cookie = /home/you/.ecash/.cookie   ; the .cookie FILE, not its directory
 
 ; Serve wallets and apps
 electrum      = on
@@ -545,18 +547,40 @@ esplora_bind  = 0.0.0.0:3000
 Bind to `127.0.0.1` instead if you are not exposing the ports, and put stunnel or nginx
 in front if you are — there is no TLS in-process (see [Electrum server](#electrum-server)).
 
-**These networks respin, and each run changes the network magic.** `network = ecash`
-carries drynet4's (`eca5d404`); for any other run set `magic` alongside it rather than
-waiting for a hrafnar release:
+**Index from a complete chain.** The bulk build walks headers back to genesis, so a
+node that is still backfilling history — ECX ships an assumeutxo snapshot at height
+965,000, and a node started from it downloads the blocks below that in the background —
+has an unconnectable tip and hrafnar will index only what is contiguous from genesis.
+Wait for `getchainstates` to report a single fully validated chainstate before running
+`hrafnar index`.
+
+**What the fork changes, and why none of it reaches the index.** The difficulty resets
+at the fork block and then retargets every 288 blocks; hrafnar selects the chain by
+cumulative work and never checks nBits against a schedule. Replay protection makes
+`nLockTime = 499999998` always-final; it is just a field to hrafnar. A fixed set of
+"repurpose" transactions skip script checks in the node; they are ordinary transactions
+in ordinary blocks and index like any other. `OP_DRIVECHAIN` is covered below.
+
+**The fork's other networks.** `ecash-signet` (default challenge, magic `b39e0026`,
+RPC 38532) and `ecash-regtest` (`eca5b134`, RPC 18643) are built in. The fork also has
+testnet3 (`eca5b114`, RPC 18532) and testnet4 (`eca5b124`, RPC 48532); run those as
+`network = ecash-signet` with `magic` and `rpc` set — signet shares their `tb` address
+formats, and only the magic and port differ:
 
 ```ini
-network = ecash
-magic   = eca5a104        ; alphanet (drynet4 is eca5d404)
+network = ecash-signet
+magic   = eca5b114        ; ecash testnet3
+rpc     = 127.0.0.1:18532
 ```
 
-Only the magic differs between runs — ports, address formats and units are unchanged,
-so everything else still comes from `network`. A wrong value surfaces immediately as
-`Bad_Magic` on the first blk file rather than as bad data.
+A wrong magic surfaces immediately as `Bad_Magic` on the first blk file rather than as
+bad data.
+
+**Upgrading from the pre-launch networks.** `network = ecash` used to carry drynet4's
+magic (`eca5d404`); drynet, alphanet and betanet are retired. An index built from one of
+them records that magic and now refuses to open under `network = ecash` with a chain
+mismatch error. Add `magic = eca5d404` to keep serving it, or point `index` at a fresh
+directory for mainnet.
 
 Two things that bite:
 

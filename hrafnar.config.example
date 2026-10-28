@@ -17,10 +17,11 @@ index = /Users/you/.hrafnar/mainnet
 ;work = /mnt/scratch/hrafnar-work
 
 ; mainnet | testnet3 | signet | regtest | ecash | ecash-signet | ecash-regtest
-; (ecash = the ecash-com/bitcoin fork: Bitcoin's rules and address
-;  formats, ECX units, its own network magic. Its ports are Bitcoin's
-;  +200, so RPC defaults to 8532 here — no `rpc` line needed. The test
-;  networks respin, and each run changes the magic; see `magic` below.)
+; (ecash = the ecash-com/bitcoin fork's MAINNET: Bitcoin's chain to height
+;  973728 and its own from there, Bitcoin's address formats, ECX units,
+;  its own network magic (eca5dcb7). Its ports are Bitcoin's +200, so RPC
+;  defaults to 8532 here — no `rpc` line needed. The node's datadir is
+;  ~/.ecash, so `datadir` is normally ~/.ecash/blocks.)
 network = mainnet
 
 ; Worker threads for the bulk build. Default: core count.
@@ -39,13 +40,15 @@ network = mainnet
 ; merge two chains' rows and serve balances that are quietly wrong.
 ;
 ; Network magic override, 8 hex digits, as it appears in the blk files.
-; Only needed for the ecash test networks, which respin regularly and give
-; each run its own magic byte:
-;   drynet4   eca5d404   (what `network = ecash` uses by default)
-;   alphanet  eca5a104
+; Only needed for ecash networks the built-in table does not carry:
+;   ecash testnet3   eca5b114   (use network = ecash-signet for tb addresses,
+;   ecash testnet4   eca5b124    and set rpc to 18532 / 48532 explicitly)
+;   drynet4          eca5d404   (retired pre-launch network; an index built
+;                               from it under `network = ecash` needs this
+;                               line to keep opening — mainnet is eca5dcb7)
 ; Everything else — units, address formats, RPC port — still comes from
 ; `network`. A wrong value shows up as Bad_Magic on the first blk file.
-;magic = eca5a104
+;magic = eca5b114
 
 ; Blocks that must age past the horizon before a promotion runs. Default 150.
 ;

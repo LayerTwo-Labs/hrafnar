@@ -89,7 +89,8 @@ test_config_file_rejects_bad_input :: proc(t: ^testing.T) {
 // so its RPC listens on 8532, not 8332. hrafnar advertised ecash network
 // support while hardcoding Bitcoin's port, which surfaced as
 // Rpc_Unavailable on every mempool cycle — indistinguishable from bad
-// credentials, and the reason a real drynet4 node looked unreachable.
+// credentials, and the reason a real ecash node looked unreachable.
+// Ports per the fork's src/chainparamsbase.cpp and README.
 @(test)
 test_rpc_default_port_per_network :: proc(t: ^testing.T) {
 	cases := []struct {
@@ -183,11 +184,37 @@ test_shipped_config_example_parses_uncommented :: proc(t: ^testing.T) {
 	)
 }
 
-// The ecash test networks respin regularly and each run gets a new magic
-// byte — drynet4 is ec a5 d4 04, alphanet is ec a5 a1 04, differing only
-// in byte 2. Pinning every run in the Network enum would mean a hrafnar
-// release per respin, so `magic` overrides it while `network` still
-// supplies units, address handling and the RPC port.
+// `network = ecash` must frame blk records with the magic the real ECX
+// node writes, not a retired test network's. hrafnar shipped drynet4's
+// (ec a5 d4 04) under that name until the mainnet parameters landed in
+// ecash-com/bitcoin's src/kernel/chainparams.cpp; against a real node
+// that is Bad_Magic on the first blk file — loud, at least, but useless.
+// Values here are copied from chainparams.cpp on master. Signet's is the
+// first 4 bytes of SHA256d over the compactsize-serialized "ecash" plus
+// the default challenge, which is how the fork salts it.
+@(test)
+test_ecash_network_magic :: proc(t: ^testing.T) {
+	cases := []struct {
+		net:  hugin.Network,
+		want: [4]u8,
+	} {
+		{.Ecash, {0xEC, 0xA5, 0xDC, 0xB7}},
+		{.Ecash_Signet, {0xB3, 0x9E, 0x00, 0x26}},
+		{.Ecash_Regtest, {0xEC, 0xA5, 0xB1, 0x34}},
+		// Bitcoin's, so an ecash index can never be mistaken for one.
+		{.Mainnet, {0xF9, 0xBE, 0xB4, 0xD9}},
+		{.Regtest, {0xFA, 0xBF, 0xB5, 0xDA}},
+	}
+	for c in cases {
+		got := hugin.network_magic(c.net)
+		testing.expectf(t, got == c.want, "%v: magic %v, want %v", c.net, got, c.want)
+	}
+}
+
+// The fork's test networks (testnet3 ec a5 b1 14, testnet4 ec a5 b1 24)
+// and any pre-launch respin differ from mainnet only in magic, so `magic`
+// overrides it while `network` still supplies units, address handling and
+// the RPC port — no hrafnar release per network.
 @(test)
 test_magic_override :: proc(t: ^testing.T) {
 	// Parsing, including the forms a user will actually type.
@@ -196,9 +223,9 @@ test_magic_override :: proc(t: ^testing.T) {
 		want: [4]u8,
 		ok:   bool,
 	} {
-		{"eca5a104", {0xEC, 0xA5, 0xA1, 0x04}, true}, // alphanet
-		{"ECA5D404", {0xEC, 0xA5, 0xD4, 0x04}, true}, // drynet4, uppercase
-		{"0xeca5a134", {0xEC, 0xA5, 0xA1, 0x34}, true}, // alphanet regtest, 0x prefix
+		{"eca5b114", {0xEC, 0xA5, 0xB1, 0x14}, true}, // ecash testnet3
+		{"ECA5B124", {0xEC, 0xA5, 0xB1, 0x24}, true}, // ecash testnet4, uppercase
+		{"0xeca5d404", {0xEC, 0xA5, 0xD4, 0x04}, true}, // retired drynet4, 0x prefix
 		{"eca5a1", {}, false}, // too short
 		{"eca5a1040", {}, false}, // too long
 		{"eca5a1zz", {}, false}, // not hex
@@ -214,7 +241,7 @@ test_magic_override :: proc(t: ^testing.T) {
 
 	// An override wins over the network's own magic; without one the
 	// network's is used.
-	alpha, _ := hugin.magic_parse("eca5a104")
+	alpha, _ := hugin.magic_parse("eca5b114")
 	with_override := hugin.Config {
 		network = .Ecash,
 		magic   = alpha,
@@ -228,17 +255,18 @@ test_magic_override :: proc(t: ^testing.T) {
 	testing.expectf(
 		t,
 		hugin.config_magic(plain) != alpha,
-		"drynet4 and alphanet magic must differ, or this override is pointless",
+		"mainnet and testnet3 magic must differ, or this override is pointless",
 	)
 }
 
 // An index must refuse to be opened against a different chain.
 //
-// The ecash test networks share Bitcoin's address formats and differ only
-// in network magic, so pointing an alphanet config at a Bitcoin index
-// directory does not look obviously wrong — it would merge two chains'
-// rows and serve balances that are quietly incorrect. The index records
-// the magic it was built with and this check refuses a mismatch.
+// The ecash networks share Bitcoin's address formats (and its history up
+// to the fork height) and differ only in network magic, so pointing an
+// ecash config at a Bitcoin index directory does not look obviously wrong
+// — it would merge two chains' rows and serve balances that are quietly
+// incorrect. The index records the magic it was built with and this check
+// refuses a mismatch.
 @(test)
 test_index_refuses_a_different_chain :: proc(t: ^testing.T) {
 	dir, derr := os.make_directory_temp("", "hugin_chain_*", context.allocator)
@@ -250,39 +278,42 @@ test_index_refuses_a_different_chain :: proc(t: ^testing.T) {
 		index_dir = dir,
 		network   = .Mainnet,
 	}
-	alpha_magic, _ := hugin.magic_parse("eca5a104")
-	alpha := hugin.Config {
+	ecash := hugin.Config {
 		index_dir = dir,
 		network   = .Ecash,
-		magic     = alpha_magic,
 	}
 
 	// No marker yet: an older index is adopted, not rejected.
-	testing.expect_value(t, hugin.chain_id_check(alpha), nil)
+	testing.expect_value(t, hugin.chain_id_check(ecash), nil)
 
 	// Built as Bitcoin mainnet...
 	testing.expect_value(t, hugin.chain_id_write(dir, hugin.config_magic(btc)), nil)
 	testing.expect_value(t, hugin.chain_id_check(btc), nil)
 
-	// ...must refuse an alphanet config pointed at it.
+	// ...must refuse an ecash config pointed at it.
 	{
 		ctx := context
 		ctx.logger = log.nil_logger() // the check logs at error level
 		context = ctx
-		err := hugin.chain_id_check(alpha)
+		err := hugin.chain_id_check(ecash)
 		testing.expectf(
 			t,
 			err == hugin.Usage_Error.Bad_Config,
-			"opening a Bitcoin index with an alphanet config returned %v, want Bad_Config",
+			"opening a Bitcoin index with an ecash config returned %v, want Bad_Config",
 			err,
 		)
 	}
 
-	// And drynet4 vs alphanet — same network enum, different run — must
-	// also be caught, which is the case a `network` check alone would miss.
+	// And a retired drynet4 index (built under `network = ecash` when that
+	// name carried drynet4's magic) vs today's mainnet `ecash` — same
+	// network enum, different chain — must also be caught, which is the
+	// case a `network` check alone would miss. This is the exact upgrade
+	// path an operator hits after the mainnet magic landed.
+	dry_magic, _ := hugin.magic_parse("eca5d404")
 	dry := hugin.Config {
 		index_dir = dir,
 		network   = .Ecash,
+		magic     = dry_magic,
 	}
 	testing.expect_value(t, hugin.chain_id_write(dir, hugin.config_magic(dry)), nil)
 	{
@@ -291,8 +322,10 @@ test_index_refuses_a_different_chain :: proc(t: ^testing.T) {
 		context = ctx
 		testing.expectf(
 			t,
-			hugin.chain_id_check(alpha) == hugin.Usage_Error.Bad_Config,
-			"a drynet4 index must not be opened with an alphanet config",
+			hugin.chain_id_check(ecash) == hugin.Usage_Error.Bad_Config,
+			"a drynet4 index must not be opened with a mainnet ecash config",
 		)
+		// Pinning the old magic keeps the old index usable.
+		testing.expect_value(t, hugin.chain_id_check(dry), nil)
 	}
 }

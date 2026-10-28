@@ -10,7 +10,7 @@ package hugin
 //   workers     = 8
 //   bucket_bits = 12
 //   horizon     = 100
-//   magic       = eca5a104
+//   magic       = eca5b114   ; override, test networks only
 //   promote_batch = 150
 //
 // Keys may live in the global (sectionless) scope or under [hugin]; other

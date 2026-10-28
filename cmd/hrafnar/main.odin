@@ -20,7 +20,7 @@ import "core:time"
 
 import hugin "../../hugin"
 
-VERSION :: "0.24.0 (2026-08-28.1)"
+VERSION :: "0.25.0 (2026-10-28.1)"
 
 COMMANDS_USAGE :: `hrafnar — Bitcoin address indexer
 
@@ -52,12 +52,12 @@ Options :: struct {
 	datadir:     string `usage:"Bitcoin Core blocks directory (blk*.dat)"`,
 	index:       string `usage:"Hrafnar index directory"`,
 	work:        string `usage:"bulk-build scratch directory (default: <index>/work; put it on a second disk to split space needs)"`,
-	network:     string `usage:"mainnet | testnet3 | signet | regtest (default mainnet)"`,
+	network:     string `usage:"mainnet | testnet3 | signet | regtest | ecash | ecash-signet | ecash-regtest (default mainnet)"`,
 	workers:     int `usage:"worker threads (default: core count)"`,
 	bucket_bits: uint `args:"name=bucket-bits" usage:"keyspace partition bits (default 12)"`,
 	horizon:     uint `usage:"reorg horizon in blocks (default 100)"`,
 	promote_batch: uint `usage:"blocks below the horizon before promoting (default 150)"`,
-	magic:       string `usage:"network magic override, 8 hex digits (e.g. eca5a104)"`,
+	magic:       string `usage:"network magic override, 8 hex digits (e.g. eca5b114 for ecash testnet3)"`,
 	memory_budget: uint `usage:"MB the build may use (default: 2/3 of available memory)"`,
 	max_height:  int `args:"name=max-height" usage:"index only up to this height (index only)"`,
 	poll:        uint `usage:"daemon: catch-up interval in seconds (default 30)"`,
@@ -176,7 +176,7 @@ main :: proc() {
 	if opt.magic != "" {
 		m, mok := hugin.magic_parse(opt.magic)
 		if !mok {
-			fmt.eprintfln("bad --magic %q: want 8 hex digits, e.g. eca5a104", opt.magic)
+			fmt.eprintfln("bad --magic %q: want 8 hex digits, e.g. eca5b114", opt.magic)
 			os.exit(2)
 		}
 		cfg_magic = m

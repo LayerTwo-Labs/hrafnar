@@ -46,7 +46,10 @@ Network :: enum {
 	Testnet3,
 	Signet,
 	Regtest,
-	Ecash, // ecash-com/bitcoin: Bitcoin's rules and addresses, its own network magic
+	// ecash-com/bitcoin (the ECX node): Bitcoin's chain up to height
+	// 973728, its own from there. Bitcoin's address formats and script
+	// rules throughout; only magic, ports and consensus details differ.
+	Ecash,
 	Ecash_Signet, // default signet challenge only (magic is derived from the challenge)
 	Ecash_Regtest,
 }
@@ -112,14 +115,20 @@ network_magic :: proc(n: Network) -> [4]u8 {
 	case .Regtest:
 		return {0xFA, 0xBF, 0xB5, 0xDA}
 	case .Ecash:
-		return {0xEC, 0xA5, 0xD4, 0x04}
+		// eCash mainnet, per src/kernel/chainparams.cpp on master. The
+		// pre-launch test networks had their own (drynet4 ec a5 d4 04,
+		// alphanet ec a5 a1 04) and are retired; an index built from one
+		// now fails chain_id_check under this network unless `magic` is
+		// set to the value it was built with.
+		return {0xEC, 0xA5, 0xDC, 0xB7}
 	case .Ecash_Signet:
-		// SHA256d("ecash" + default challenge), first 4 bytes — matches
-		// the fork's salted signet magic derivation. Custom challenges
-		// would need a config key; unsupported until someone runs one.
+		// SHA256d(compactsize-serialized "ecash" + default challenge),
+		// first 4 bytes — matches the fork's salted signet magic
+		// derivation. Custom challenges would need a config key;
+		// unsupported until someone runs one.
 		return {0xB3, 0x9E, 0x00, 0x26}
 	case .Ecash_Regtest:
-		return {0xEC, 0xA5, 0xD4, 0x34}
+		return {0xEC, 0xA5, 0xB1, 0x34}
 	}
 	return {}
 }
@@ -132,11 +141,11 @@ Config :: struct {
 	// pointing it at a separate disk halves the space one volume needs.
 	network:     Network,
 	// Optional network-magic override, as it appears in the blk file.
-	// The ecash test networks respin regularly and each run gets a new
-	// magic byte (drynet4 ec a5 d4 04, alphanet ec a5 a1 04), so pinning
-	// every run in the Network enum would mean a hrafnar release per
-	// respin. Set `magic` in the config instead; everything else about
-	// the network (units, address formats, RPC port) still comes from
+	// For ecash test networks the built-in table does not carry (the fork
+	// has testnet3 ec a5 b1 14 and testnet4 ec a5 b1 24, and its
+	// pre-launch networks each had their own), so a respin or a new test
+	// network does not need a hrafnar release. Everything else about the
+	// network (units, address formats, RPC port) still comes from
 	// `network`. Zero means "use the network's own magic".
 	magic:       [4]u8,
 	bucket_bits: u32, // default 12
@@ -190,9 +199,9 @@ FORMAT_FILE_NAME :: "FORMAT"
 
 // The CHAIN file records which chain an index holds, as the magic hex the
 // blocks were framed with. Without it nothing stopped an index directory
-// being reused across chains — and since the ecash test networks share
-// Bitcoin's address formats, an alphanet index written into a Bitcoin one
-// would not look obviously wrong. It would merge two chains' rows and
+// being reused across chains — and since the ecash networks share
+// Bitcoin's address formats (and its history to the fork height), an
+// ecash index written into a Bitcoin one would not look obviously wrong. It would merge two chains' rows and
 // serve balances that are quietly incorrect, which is the one failure this
 // project refuses to have.
 CHAIN_FILE_NAME :: "CHAIN"
